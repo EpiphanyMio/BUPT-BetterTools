@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules
+dist
+.pnpm-store
+.pnpm-cache
+.vite-temp
+
+# 本地环境文件
+*.local
+.env
+.env.*
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db

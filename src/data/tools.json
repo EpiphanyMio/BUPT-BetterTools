@@ -1,0 +1,194 @@
+[
+  {
+    "id": "github",
+    "name": "GitHub",
+    "url": "https://github.com",
+    "description": "代码托管与版本管理，你的云端代码仓库",
+    "category": "开发",
+    "icon": "🐙"
+  },
+  {
+    "id": "mdn",
+    "name": "MDN Web Docs",
+    "url": "https://developer.mozilla.org/zh-CN/",
+    "description": "HTML/CSS/JavaScript 最权威的中文文档",
+    "category": "开发",
+    "icon": "📚"
+  },
+  {
+    "id": "ts-doc",
+    "name": "TypeScript 文档",
+    "url": "https://www.typescriptlang.org/docs/",
+    "description": "TypeScript 官方文档，查类型写法",
+    "category": "开发",
+    "icon": "🔷"
+  },
+  {
+    "id": "react-doc",
+    "name": "React 中文文档",
+    "url": "https://zh-hans.react.dev/",
+    "description": "React 官方中文教程与 API 手册",
+    "category": "开发",
+    "icon": "⚛️"
+  },
+  {
+    "id": "vite",
+    "name": "Vite 文档",
+    "url": "https://cn.vite.dev/",
+    "description": "本项目用的打包工具，速度快",
+    "category": "开发",
+    "icon": "⚡"
+  },
+  {
+    "id": "stackoverflow",
+    "name": "Stack Overflow",
+    "url": "https://stackoverflow.com",
+    "description": "遇到报错先来这里搜，大概率有人问过",
+    "category": "开发",
+    "icon": "💬"
+  },
+  {
+    "id": "regex101",
+    "name": "regex101",
+    "url": "https://regex101.com",
+    "description": "正则表达式在线调试，实时解释每一段",
+    "category": "开发",
+    "icon": "🔍"
+  },
+  {
+    "id": "caniuse",
+    "name": "Can I use",
+    "url": "https://caniuse.com",
+    "description": "查询浏览器对新特性的兼容情况",
+    "category": "开发",
+    "icon": "🌐"
+  },
+  {
+    "id": "freecodecamp",
+    "name": "freeCodeCamp 中文",
+    "url": "https://www.freecodecamp.org/chinese/",
+    "description": "免费系统化编程课程，边练边学",
+    "category": "学习",
+    "icon": "🎓"
+  },
+  {
+    "id": "runoob",
+    "name": "菜鸟教程",
+    "url": "https://www.runoob.com",
+    "description": "入门教程速查，例子短平快",
+    "category": "学习",
+    "icon": "🐣"
+  },
+  {
+    "id": "leetcode",
+    "name": "力扣 LeetCode",
+    "url": "https://leetcode.cn",
+    "description": "算法题库，练手感和思维",
+    "category": "学习",
+    "icon": "🧩"
+  },
+  {
+    "id": "luogu",
+    "name": "洛谷",
+    "url": "https://www.luogu.com.cn/",
+    "description": "算法竞赛刷题平台，题单分层，从入门到进阶",
+    "category": "学习",
+    "icon": "🐮"
+  },
+  {
+    "id": "javascript-info",
+    "name": "现代 JavaScript 教程",
+    "url": "https://zh.javascript.info/",
+    "description": "从基础到进阶的 JS 教程，讲得很清楚",
+    "category": "学习",
+    "icon": "📖"
+  },
+  {
+    "id": "figma",
+    "name": "Figma",
+    "url": "https://www.figma.com",
+    "description": "在线 UI 设计协作工具",
+    "category": "设计",
+    "icon": "🎨"
+  },
+  {
+    "id": "coolors",
+    "name": "Coolors",
+    "url": "https://coolors.co",
+    "description": "一键生成配色方案，做界面不再纠结",
+    "category": "设计",
+    "icon": "🌈"
+  },
+  {
+    "id": "iconify",
+    "name": "Iconify",
+    "url": "https://icon-sets.iconify.design",
+    "description": "海量免费图标集合，可复制 SVG",
+    "category": "设计",
+    "icon": "🧿"
+  },
+  {
+    "id": "fonts",
+    "name": "Google Fonts",
+    "url": "https://fonts.google.com",
+    "description": "免费网页字体，中文英文字体都有",
+    "category": "设计",
+    "icon": "🔤"
+  },
+  {
+    "id": "json-tool",
+    "name": "JSON 格式化",
+    "url": "https://jsoneditoronline.org",
+    "description": "JSON 美化、校验、树形查看",
+    "category": "实用",
+    "icon": "🧾"
+  },
+  {
+    "id": "timestamp",
+    "name": "时间戳转换",
+    "url": "https://tool.lu/timestamp/",
+    "description": "Unix 时间戳与日期互转",
+    "category": "实用",
+    "icon": "⏱️"
+  },
+  {
+    "id": "tinypng",
+    "name": "TinyPNG",
+    "url": "https://tinypng.com",
+    "description": "压缩图片体积，网页加载更快",
+    "category": "实用",
+    "icon": "🖼️"
+  },
+  {
+    "id": "cli-im",
+    "name": "草料二维码",
+    "url": "https://cli.im",
+    "description": "生成二维码，支持文字和网址",
+    "category": "实用",
+    "icon": "📱"
+  },
+  {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "url": "https://chat.deepseek.com",
+    "description": "AI 对话助手，写代码问问题都好用",
+    "category": "AI",
+    "icon": "🐋"
+  },
+  {
+    "id": "claude",
+    "name": "Claude",
+    "url": "https://claude.ai",
+    "description": "Anthropic 的 AI 助手，擅长长文和代码",
+    "category": "AI",
+    "icon": "🧠"
+  },
+  {
+    "id": "chatgpt",
+    "name": "ChatGPT",
+    "url": "https://chat.openai.com",
+    "description": "OpenAI 的对话助手",
+    "category": "AI",
+    "icon": "🤖"
+  }
+]

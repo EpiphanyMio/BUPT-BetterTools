@@ -1,0 +1,11 @@
+# 统一换行符：仓库里一律存 LF，避免 Windows / macOS 之间反复变动
+* text=auto eol=lf
+
+# 二进制文件不要按文本处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

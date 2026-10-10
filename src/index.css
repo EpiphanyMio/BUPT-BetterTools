@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+/* 让中英文混排看起来更自然 */
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei',
+    'PingFang SC', sans-serif;
+}
