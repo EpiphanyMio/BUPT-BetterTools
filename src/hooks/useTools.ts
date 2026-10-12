@@ -186,3 +186,13 @@ export function useTools() {
     resetAll,
   }
 }
+
+/**
+ * 给首页用：不挂载整个工具箱，只读一次本地数据算个数量。
+ * 这样首页不必依赖工具箱模块内部的状态。
+ */
+export function readToolCounts() {
+  const storedTools = loadFromStorage<Tool[]>(TOOLS_KEY, [...seedTools])
+  const storedGroups = loadFromStorage<string[]>(GROUPS_KEY, [...seedGroups])
+  return { toolCount: storedTools.length, groupCount: storedGroups.length }
+}
