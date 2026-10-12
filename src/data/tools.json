@@ -190,5 +190,53 @@
     "description": "OpenAI 的对话助手",
     "category": "AI",
     "icon": "🤖"
+  },
+  {
+    "id": "bupt-aqjy",
+    "name": "北邮安全教育平台",
+    "url": "http://buptaqjy.fanya.chaoxing.com",
+    "description": "超星网络教学平台，安全课与在线课程",
+    "category": "教务",
+    "icon": "🦺"
+  },
+  {
+    "id": "zhihuishu",
+    "name": "智慧树在线学堂",
+    "url": "https://onlineweb.zhihuishu.com/onlinestuh5",
+    "description": "公选课在线学习（解码国家安全、可再生能源与低碳社会等）",
+    "category": "教务",
+    "icon": "🌳"
+  },
+  {
+    "id": "bupt-portal",
+    "name": "北邮信息门户",
+    "url": "https://nic.bupt.edu.cn/fwzx/xxfw/xxmh.htm",
+    "description": "校内信息化服务入口，统一信息门户",
+    "category": "教务",
+    "icon": "🏫"
+  },
+  {
+    "id": "bupt-3dg",
+    "name": "北邮 3DG 平台",
+    "url": "https://3dg.bupt.edu.cn/",
+    "description": "校内平台，链接来自《网课及常用链接汇总》",
+    "category": "教务",
+    "icon": "🧊"
+  },
+  {
+    "id": "bupt-ucloud",
+    "name": "北邮云盘",
+    "url": "https://ucloud.bupt.edu.cn",
+    "description": "校内云存储，放课件和资料",
+    "category": "教务",
+    "icon": "☁️"
+  },
+  {
+    "id": "trufar",
+    "name": "TruFar 平台",
+    "url": "https://trufar.bupt.edu.cn/agent/agent-market",
+    "description": "校内 AI 智能体市场",
+    "category": "教务",
+    "icon": "🤝"
   }
 ]

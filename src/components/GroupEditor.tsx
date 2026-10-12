@@ -17,6 +17,9 @@ interface GroupEditorProps {
   onUpdateTool: (id: string, values: ToolDraft) => void
   onMoveTool: (id: string, category: string) => void
   onRemoveTool: (id: string) => void
+  onMergeSeed: () => number
+  /** 默认清单里有、当前数据里还没有的工具数量（0 表示没有需要补充的） */
+  missingSeedCount: number
   onReset: () => void
   autoScroll: AutoScrollConfig
 }
@@ -32,10 +35,14 @@ export default function GroupEditor({
   onUpdateTool,
   onMoveTool,
   onRemoveTool,
+  onMergeSeed,
+  missingSeedCount,
   onReset,
   autoScroll,
 }: GroupEditorProps) {
   const [newGroup, setNewGroup] = useState('')
+  // 「补充默认清单」执行后的结果提示
+  const [mergeNote, setMergeNote] = useState('')
   // editing 为 null 表示"在列表页"；有值表示"正在填工具表单"
   const [editing, setEditing] = useState<{ category: string; tool: Tool | null } | null>(null)
 
@@ -85,6 +92,15 @@ export default function GroupEditor({
       onRemoveTool(editingTool.id)
       setEditing(null)
     }
+  }
+
+  function handleMergeSeed() {
+    const added = onMergeSeed()
+    setMergeNote(
+      added > 0
+        ? `已补充 ${added} 个工具到对应分组。`
+        : '默认清单里的工具都已经有了，没有需要补充的。',
+    )
   }
 
   function handleReset() {
@@ -137,6 +153,29 @@ export default function GroupEditor({
             />
           ) : (
             <>
+              {/* 默认清单有更新时的提示条。
+                  放在最上面是有意的：以前这个入口在弹窗最底部，要滚动才能看到，很容易被忽略。 */}
+              {missingSeedCount > 0 && (
+                <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-3">
+                  <span className="text-sm text-sky-800">
+                    📦 默认清单里有 <b>{missingSeedCount}</b> 个工具你还没有
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleMergeSeed}
+                    className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white shadow-sm transition hover:bg-sky-700"
+                  >
+                    补充到我的工具箱
+                  </button>
+                </div>
+              )}
+
+              {mergeNote && (
+                <p className="mb-4 rounded-xl bg-sky-50 px-3.5 py-2 text-sm text-sky-700">
+                  {mergeNote}
+                </p>
+              )}
+
               {/* 一键添加新分组 */}
               <div className="mb-5 rounded-xl bg-slate-50 p-3">
                 <label className="mb-1 block text-sm font-medium text-slate-700">
@@ -182,6 +221,9 @@ export default function GroupEditor({
                 >
                   恢复默认数据
                 </button>
+                <p className="mt-2 text-xs text-slate-400">
+                  只清空你在本机做过的全部修改，还原成默认清单。
+                </p>
                 <p className="mt-1 text-xs text-slate-400">
                   提示：所有修改都保存在这台设备的浏览器里，不会上传到服务器。
                 </p>

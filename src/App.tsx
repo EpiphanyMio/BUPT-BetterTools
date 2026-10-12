@@ -3,9 +3,10 @@
 // 数据流（理解 React 的关键）：
 //   useState 保存状态  →  用户操作触发 setXxx  →  组件重新渲染  →  界面跟着更新
 //
-// 拖拽有两个用途：
-//   ① 在卡片之间拖动 → 调整顺序
+// 拖拽有三个用途：
+//   ① 在卡片之间拖动 → 调整卡片顺序
 //   ② 把卡片拖到上方的分组标签上 → 移进那个分组
+//   ③ 拖动分组标签本身 → 调整分组的排列顺序
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
@@ -58,6 +59,9 @@ export default function App() {
     updateTool,
     moveTool,
     removeTool,
+    reorderGroups,
+    mergeSeed,
+    missingSeedCount,
     resetAll,
   } = useTools()
 
@@ -133,10 +137,24 @@ export default function App() {
   const autoScroll = useMemo(() => buildAutoScroll(dev), [dev])
 
   // ---- 碰撞检测（决定"松手时投给谁"）----
-  // 优先判断"指针是不是真的压在某个分组标签上"：
-  //   是 → 投给那个标签（= 把工具移进该分组）
-  //   否 → 退回"最近中心"算法（= 卡片之间排序）
+  // 要分两种情况，因为"正在拖的是什么"决定了该去找什么样的目标：
+  //
+  //   拖的是分组标签 → 只在标签之间找最近的（= 调整分组顺序）
+  //                    绝不能把卡片算进来，否则标签会往卡片格里跑
+  //   拖的是工具卡片 → 先看指针是不是真的压在某个标签上（= 移进该分组），
+  //                    不是的话退回"最近中心"算法（= 卡片之间排序）
   const collisionDetection = useCallback<CollisionDetection>((args) => {
+    const draggingTab = String(args.active.id).startsWith(TAB_PREFIX)
+
+    if (draggingTab) {
+      return closestCenter({
+        ...args,
+        droppableContainers: args.droppableContainers.filter((container) =>
+          String(container.id).startsWith(TAB_PREFIX),
+        ),
+      })
+    }
+
     const overTabs = pointerWithin(args).filter((collision) =>
       String(collision.id).startsWith(TAB_PREFIX),
     )
@@ -160,7 +178,18 @@ export default function App() {
     const activeId = String(active.id)
     const overId = String(over.id)
 
-    // 情况 A：拖到了分组标签上 → 把工具移到那个分组
+    // 情况 A：拖的是分组标签本身 → 调整分组顺序
+    // groups 数组的顺序就是标签的显示顺序，所以"换个位置"就够了
+    if (activeId.startsWith(TAB_PREFIX)) {
+      if (activeId === overId) return
+      const from = groups.indexOf(activeId.slice(TAB_PREFIX.length))
+      const to = groups.indexOf(overId.slice(TAB_PREFIX.length))
+      if (from === -1 || to === -1) return
+      reorderGroups(from, to)
+      return
+    }
+
+    // 情况 B：把工具卡片拖到了分组标签上 → 移进那个分组
     if (overId.startsWith(TAB_PREFIX)) {
       const targetGroup = overId.slice(TAB_PREFIX.length)
       const tool = tools.find((item) => item.id === activeId)
@@ -168,7 +197,7 @@ export default function App() {
       return
     }
 
-    // 情况 B：在卡片之间拖动 → 调整顺序
+    // 情况 C：在卡片之间拖动 → 调整顺序
     if (activeId === overId) return
 
     const oldIndex = visibleIds.indexOf(activeId)
@@ -255,7 +284,7 @@ export default function App() {
 
           {/* 拖动提示 */}
           <p className="mb-3 text-xs text-slate-400">
-            提示：按住卡片左上角的手柄可调整顺序；把它拖到上方的分组标签上，就能移进那个分组
+            提示：按住卡片左上角的手柄可调整顺序；把它拖到上方的分组标签上，就能移进那个分组；按住分组标签拖动则可以调整分组的先后顺序
           </p>
 
           {/* 工具卡片列表 */}
@@ -302,6 +331,8 @@ export default function App() {
         onUpdateTool={updateTool}
         onMoveTool={moveTool}
         onRemoveTool={removeTool}
+        onMergeSeed={mergeSeed}
+        missingSeedCount={missingSeedCount}
         onReset={resetAll}
         autoScroll={autoScroll}
       />

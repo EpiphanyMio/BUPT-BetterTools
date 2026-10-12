@@ -5,7 +5,7 @@
 //   2. 之后你在页面上做的任何增删改，都会保存到 localStorage，
 //      从此以浏览器里存的为准。（想回到初始状态，用弹窗里的"恢复默认数据"）
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import seedToolsData from '../data/tools.json'
 import type { Tool, ToolDraft } from '../types'
 
@@ -40,6 +40,11 @@ function createId() {
   }
 }
 
+// 判断两个网址是不是"同一个链接"：忽略首尾空白、结尾斜杠和大小写差异
+function normalizeUrl(url: string) {
+  return url.trim().replace(/\/+$/, '').toLowerCase()
+}
+
 export function useTools() {
   const [tools, setTools] = useState<Tool[]>(() =>
     loadFromStorage(TOOLS_KEY, [...seedTools]),
@@ -68,6 +73,24 @@ export function useTools() {
     setGroups((prev) => prev.filter((group) => group !== name))
     // 分组没了，组里的工具也一起删掉
     setTools((prev) => prev.filter((tool) => tool.category !== name))
+  }, [])
+
+  // 调整分组的排列顺序（拖动分组标签时调用）
+  //
+  // 这里不需要额外存一份"顺序表"：groups 数组本身就有顺序，
+  // 数组里靠前的分组，标签就排在前面。所以"排序"就是把数组元素换个位置。
+  const reorderGroups = useCallback((from: number, to: number) => {
+    setGroups((prev) => {
+      // 原地不动或下标越界：返回原数组。
+      // 返回同一个引用，React 就知道"没变化"，不会触发多余的重新渲染。
+      if (from === to) return prev
+      if (from < 0 || to < 0 || from >= prev.length || to >= prev.length) return prev
+
+      const next = [...prev] // 先复制一份，不要直接改原数组
+      const [moved] = next.splice(from, 1) // 把自己从原位置取出来
+      next.splice(to, 0, moved) // 插到新位置
+      return next
+    })
   }, [])
 
   // ---------- 工具 ----------
@@ -117,15 +140,49 @@ export function useTools() {
     setGroups([...seedGroups])
   }, [])
 
+  // 把「默认清单」里还没有的内容补充进来（只做加法，返回补了几个工具）。
+  //
+  // 为什么需要这个操作：src/data/tools.json 只在"浏览器里还没有任何数据"时才会被采用。
+  // 一旦你在页面上改过东西，数据就存进 localStorage 了 —— 之后默认清单再更新，
+  // 你的浏览器也不会自动看到。这个操作把缺的补上，已经有的和你自己加的一概不动。
+  const mergeSeed = useCallback(() => {
+    const existingUrls = new Set(tools.map((tool) => normalizeUrl(tool.url)))
+    const missingTools = seedTools.filter(
+      (tool) => !existingUrls.has(normalizeUrl(tool.url)),
+    )
+
+    if (missingTools.length > 0) {
+      // 复制一份再加进去，不要直接改 seedTools 本身
+      setTools((prev) => [...prev, ...missingTools.map((tool) => ({ ...tool }))])
+    }
+
+    const missingGroups = seedGroups.filter((group) => !groups.includes(group))
+    if (missingGroups.length > 0) {
+      setGroups((prev) => [...prev, ...missingGroups])
+    }
+
+    return missingTools.length
+  }, [tools, groups])
+
+  // 默认清单里有、但当前数据里还没有的工具数量。
+  // 界面用它在「编辑分组」弹窗顶部显示一条提示，用户不用往下滚就能看到。
+  const missingSeedCount = useMemo(() => {
+    const existingUrls = new Set(tools.map((tool) => normalizeUrl(tool.url)))
+    return seedTools.filter((tool) => !existingUrls.has(normalizeUrl(tool.url))).length
+  }, [tools])
+
   return {
     tools,
     groups,
     addGroup,
     removeGroup,
+    reorderGroups,
     addTool,
     updateTool,
     moveTool,
     removeTool,
+    mergeSeed,
+    missingSeedCount,
     resetAll,
   }
 }
