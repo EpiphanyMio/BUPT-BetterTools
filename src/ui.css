@@ -1,0 +1,327 @@
+/* 通用组件基类
+ * ================================================================
+ * 这里放"到处都在用、写法完全一样"的样式：按钮、输入框、弹窗、复选框。
+ *
+ * 为什么不直接在组件里堆 Tailwind 类名？
+ *   一个主按钮的完整写法是「背景 + 文字色 + 内边距 + 圆角 + 阴影 + 悬停状态层 +
+ *   按下反馈 + 禁用态 + 焦点圈」八九个类，全站十几个按钮都抄一遍，
+ *   将来想统一调一下圆角就得改十几处、还容易漏。
+ *   抽成 .btn / .btn-primary 之后，改一处全站生效。
+ *
+ * 这里全部用 var(--token-*) 而不是 Tailwind 的 @apply，
+ * 因为令牌本身已经是"跟随深浅模式的动态值"，直接引用最直观，
+ * 也方便你在浏览器 DevTools 里一眼看出每个值来自哪个变量。
+ */
+
+@layer components {
+  /* ---------------------------------------------------------- 按钮
+   * Material 的按钮有三个关键点，缺一个都会"不像 Google"：
+   *   ① 状态层：悬停不是换成另一个颜色，而是叠一层半透明的当前色
+   *   ② 按下时不大面积变暗，而是叠得更深一点（8% → 12%）
+   *   ③ 过渡很快（0.15s）且用标准缓动，感觉"跟手"
+   */
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-btn);
+    /* Material 的文字按钮高度 = 40px，触屏也够点 */
+    min-height: 2.5rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+    white-space: nowrap;
+    cursor: pointer;
+    /* 用 background-image 做状态层：它和 background-color 互不干扰，
+       所以"底色 + 一层半透明叠加"能同时生效，这是 Material 的标准做法。 */
+    background-image: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0));
+    transition:
+      background-color 0.15s cubic-bezier(0.2, 0, 0, 1),
+      background-image 0.15s cubic-bezier(0.2, 0, 0, 1),
+      box-shadow 0.15s cubic-bezier(0.2, 0, 0, 1),
+      border-color 0.15s cubic-bezier(0.2, 0, 0, 1),
+      color 0.15s cubic-bezier(0.2, 0, 0, 1),
+      transform 0.15s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .btn:hover {
+    background-image: linear-gradient(var(--token-primary-layer), var(--token-primary-layer));
+  }
+
+  .btn:active {
+    background-image: linear-gradient(
+      var(--token-primary-layer),
+      var(--token-primary-layer)
+    );
+    filter: brightness(0.96);
+  }
+
+  .btn:disabled {
+    opacity: 0.38; /* Material 的禁用态标准值 */
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  /* 实心主按钮 */
+  .btn-primary {
+    background-color: var(--token-primary);
+    color: var(--token-on-primary);
+    box-shadow: var(--token-e1);
+  }
+
+  .btn-primary:hover {
+    background-color: var(--token-primary-hover);
+    box-shadow: var(--token-e2);
+  }
+
+  /* 描边按钮（次要操作） */
+  .btn-outline {
+    border-color: var(--token-line);
+    color: var(--token-primary);
+    background-color: transparent;
+  }
+
+  /* 中性按钮（取消、返回这类不强调的操作） */
+  .btn-neutral {
+    border-color: var(--token-line);
+    color: var(--token-fg-muted);
+    background-color: var(--token-surface);
+  }
+
+  .btn-neutral:hover {
+    color: var(--token-fg);
+  }
+
+  /* 纯文字按钮 */
+  .btn-text {
+    color: var(--token-fg-muted);
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  .btn-text:hover {
+    color: var(--token-primary);
+  }
+
+  /* 危险操作（删除）：只有悬停时才显出红色，避免界面到处是红 */
+  .btn-danger {
+    color: var(--token-fg-muted);
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  .btn-danger:hover {
+    color: var(--token-danger);
+    background-image: linear-gradient(
+      color-mix(in srgb, var(--token-danger) 10%, transparent),
+      color-mix(in srgb, var(--token-danger) 10%, transparent)
+    );
+  }
+
+  /* 小尺寸（卡片角上的图标按钮） */
+  .btn-sm {
+    min-height: 2rem;
+    padding: 0.25rem 0.625rem;
+  }
+
+  /* 圆形图标按钮，Google 产品右上角那一排都是这个形状 */
+  .btn-icon {
+    width: 2.5rem;
+    height: 2.5rem;
+    min-height: 2.5rem;
+    padding: 0;
+    border-radius: 9999px;
+    color: var(--token-fg-subtle);
+  }
+
+  /* ---------------------------------------------------------- 输入框
+   * Google 的输入框是"填充式"：浅灰底、没有边框、底部一条细线，
+   * 获得焦点时底色略微加深、底线变粗变蓝。比四周描边更像 Google。
+   */
+
+  .field {
+    width: 100%;
+    border-radius: var(--radius-field) var(--radius-field) 0 0; /* 上圆下直 */
+    border: none;
+    border-bottom: 1px solid var(--token-line);
+    background-color: var(--token-surface-2);
+    color: var(--token-fg);
+    padding: 0.625rem 0.75rem;
+    font-size: 0.875rem;
+    font-family: inherit;
+    outline: none;
+    transition:
+      background-color 0.15s cubic-bezier(0.2, 0, 0, 1),
+      border-color 0.15s cubic-bezier(0.2, 0, 0, 1),
+      box-shadow 0.15s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .field::placeholder {
+    color: var(--token-fg-subtle);
+    opacity: 0.8;
+  }
+
+  .field:hover {
+    background-color: var(--token-surface-3);
+  }
+
+  .field:focus {
+    background-color: var(--token-surface-3);
+    border-bottom-color: var(--token-primary);
+    /* 用 box-shadow 伪造"加粗的下划线"：不影响布局，也不会把文字顶开 */
+    box-shadow: 0 1px 0 0 var(--token-primary);
+  }
+
+  /* 需要完整描边的场合（下拉框、数字输入） */
+  .field-boxed {
+    border: 1px solid var(--token-line);
+    border-radius: var(--radius-field);
+    background-color: var(--token-surface);
+  }
+
+  .field-boxed:focus {
+    border-color: var(--token-primary);
+    box-shadow: 0 0 0 1px var(--token-primary);
+  }
+
+  /* ---------------------------------------------------------- 复选框 / 单选
+   * 用 accent-color 一行搞定：浏览器会自动把勾选框染成主色，
+   * 比自己画一个假的 checkbox 更省事，也不会破坏键盘和读屏器支持。
+   */
+
+  .check {
+    width: 1.125rem;
+    height: 1.125rem;
+    accent-color: var(--token-primary);
+    cursor: pointer;
+  }
+
+  /* ---------------------------------------------------------- 弹窗
+   * Material 的弹窗圆角特别大（28px），加上遮罩 + 浮起 + 入场动画。
+   */
+
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    overflow-y: auto;
+    background-color: color-mix(in srgb, #000 32%, transparent);
+    /* 遮罩淡入，避免"啪"地出现 */
+    animation: scrim-in 0.2s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .modal-panel {
+    background-color: var(--token-surface);
+    border-radius: var(--radius-panel);
+    box-shadow: var(--token-e5);
+    /* 入场：从略小、略低的位置"落位"，这是 Material 的标准进场 */
+    animation: panel-in 0.25s cubic-bezier(0.05, 0.7, 0.1, 1);
+  }
+
+  /* ---------------------------------------------------------- 卡片
+   * 默认只有最低一档阴影，悬停时升高一档 —— 用"海拔变化"代替放大缩小，
+   * 这是 Material 表达"能点"的方式。
+   */
+
+  .card {
+    background-color: var(--token-surface);
+    border: 1px solid var(--token-line-soft);
+    border-radius: var(--radius-card);
+    box-shadow: var(--token-e1);
+    transition:
+      box-shadow 0.2s cubic-bezier(0.2, 0, 0, 1),
+      border-color 0.2s cubic-bezier(0.2, 0, 0, 1),
+      transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .card-hover:hover {
+    box-shadow: var(--token-e3);
+    border-color: var(--token-line);
+    transform: translateY(-2px);
+  }
+
+  /* ---------------------------------------------------------- 分组胶囊
+   * Google 的筛选标签是"药丸"形，选中态用主色淡底 + 主色文字，
+   * 而不是整块涂满主色 —— 后者在深色模式下会很刺眼。
+   */
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    border-radius: 9999px;
+    border: 1px solid var(--token-line);
+    background-color: transparent;
+    color: var(--token-fg-muted);
+    padding: 0.375rem 0.875rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    background-image: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0));
+    transition:
+      background-color 0.15s cubic-bezier(0.2, 0, 0, 1),
+      background-image 0.15s cubic-bezier(0.2, 0, 0, 1),
+      border-color 0.15s cubic-bezier(0.2, 0, 0, 1),
+      color 0.15s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .chip:hover {
+    background-image: linear-gradient(var(--token-primary-layer), var(--token-primary-layer));
+    color: var(--token-fg);
+  }
+
+  .chip-active {
+    background-color: var(--token-primary-soft);
+    border-color: transparent;
+    color: var(--token-primary);
+  }
+
+  .chip-active:hover {
+    color: var(--token-primary);
+  }
+}
+
+/* ---------------------------------------------------------- 动画关键帧
+ * 写在 @layer 外面，这样它们始终可用，不会被层级覆盖规则影响。
+ */
+
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 内容"渐显上浮"：首页模块卡片依次出现时用 */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise {
+  animation: rise-in 0.35s cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}

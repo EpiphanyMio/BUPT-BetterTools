@@ -41,20 +41,20 @@ export default function ToolEditModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/50 p-4 sm:py-10"
+      className="scrim p-4 sm:py-10"
       onClick={onClose}
     >
       <div
-        className="mx-auto w-full max-w-lg rounded-2xl bg-white shadow-2xl"
+        className="modal-panel mx-auto w-full max-w-lg"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-900">编辑工具</h2>
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <h2 className="text-lg font-semibold text-fg">编辑工具</h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="关闭"
-            className="rounded-lg px-2 py-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+            className="btn-icon btn"
           >
             ✕
           </button>

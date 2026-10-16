@@ -87,7 +87,7 @@ export default function GroupEditorList({
       onDragEnd={handleDragEnd}
       onDragCancel={() => setActiveTool(null)}
     >
-      <p className="mb-3 text-xs text-slate-400">
+      <p className="mb-3 text-xs text-fg-subtle">
         提示：按住工具左侧的 ⠿ 拖动，可以把它移到别的分组
       </p>
 
@@ -107,9 +107,9 @@ export default function GroupEditorList({
       {/* 跟随鼠标的漂浮副本 */}
       <DragOverlay>
         {activeTool ? (
-          <div className="flex items-center gap-2 rounded-lg border border-sky-300 bg-white px-3 py-2 shadow-xl">
+          <div className="flex items-center gap-2 rounded-lg border border-primary bg-surface px-3 py-2 shadow-xl">
             <span className="text-lg">{activeTool.icon ?? '🔗'}</span>
-            <span className="truncate text-sm text-slate-700">
+            <span className="truncate text-sm text-fg-muted">
               {activeTool.name}
             </span>
           </div>
@@ -142,27 +142,27 @@ function GroupDropZone({
     <div
       ref={setNodeRef}
       className={
-        'rounded-xl border transition ' +
-        (isOver ? 'border-sky-400 ring-2 ring-sky-200' : 'border-slate-200')
+        'rounded-btn border transition ' +
+        (isOver ? 'border-primary ring-2 ring-primary-soft' : 'border-line')
       }
     >
-      <div className="flex items-center justify-between gap-2 rounded-t-xl bg-slate-50 px-3 py-2">
-        <span className="font-medium text-slate-800">
+      <div className="flex items-center justify-between gap-2 rounded-t-xl bg-surface-2 px-3 py-2">
+        <span className="font-medium text-fg">
           {group}
-          <span className="ml-2 text-xs text-slate-400">{tools.length} 个</span>
+          <span className="ml-2 text-xs text-fg-subtle">{tools.length} 个</span>
         </span>
         <div className="flex shrink-0 gap-1">
           <button
             type="button"
             onClick={() => onAddTool(group)}
-            className="rounded-md px-2 py-1 text-sm text-sky-700 transition hover:bg-sky-50"
+            className="rounded-md px-2 py-1 text-sm text-primary transition hover:bg-surface-2"
           >
             ＋ 添加工具
           </button>
           <button
             type="button"
             onClick={() => onRemoveGroup(group)}
-            className="rounded-md px-2 py-1 text-sm text-rose-600 transition hover:bg-rose-50"
+            className="rounded-md px-2 py-1 text-sm text-danger transition hover:bg-danger-bg"
           >
             删除分组
           </button>
@@ -170,11 +170,11 @@ function GroupDropZone({
       </div>
 
       {tools.length === 0 ? (
-        <p className="px-3 py-3 text-sm text-slate-400">
+        <p className="px-3 py-3 text-sm text-fg-subtle">
           这个分组还没有工具（可以把别的分组里的拖进来）
         </p>
       ) : (
-        <ul className="divide-y divide-slate-100">
+        <ul className="divide-y divide-line-soft">
           {tools.map((tool) => (
             <ToolRow
               key={tool.id}
@@ -210,7 +210,7 @@ function ToolRow({ tool, onEdit }: ToolRowProps) {
       ref={setNodeRef}
       className={
         'flex items-center gap-2 px-3 py-2 transition ' +
-        (isDragging ? 'bg-sky-50 opacity-40' : '')
+        (isDragging ? 'bg-surface-2 opacity-40' : '')
       }
     >
       {/* 拖拽条：按住它才会开始拖 */}
@@ -221,7 +221,7 @@ function ToolRow({ tool, onEdit }: ToolRowProps) {
         type="button"
         title="按住拖到别的分组"
         aria-label="按住拖到别的分组"
-        className="cursor-grab touch-none rounded p-1 text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 active:cursor-grabbing"
+        className="cursor-grab touch-none rounded p-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg-subtle active:cursor-grabbing"
       >
         <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
           <circle cx="2.5" cy="3" r="1.4" />
@@ -235,13 +235,13 @@ function ToolRow({ tool, onEdit }: ToolRowProps) {
 
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <span className="text-lg">{tool.icon ?? '🔗'}</span>
-        <span className="truncate text-sm text-slate-700">{tool.name}</span>
+        <span className="truncate text-sm text-fg-muted">{tool.name}</span>
       </span>
 
       <button
         type="button"
         onClick={onEdit}
-        className="shrink-0 rounded-md px-2 py-1 text-sm text-slate-600 transition hover:bg-slate-100"
+        className="shrink-0 rounded-md px-2 py-1 text-sm text-fg-muted transition hover:bg-surface-3"
       >
         编辑
       </button>

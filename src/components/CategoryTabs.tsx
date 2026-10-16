@@ -39,7 +39,7 @@ export default function CategoryTabs({
       <button
         type="button"
         onClick={onOpenEditor}
-        className="ml-auto rounded-full border border-dashed border-slate-300 bg-white px-3.5 py-1.5 text-sm text-slate-500 transition hover:border-sky-400 hover:text-sky-700"
+        className="ml-auto rounded-full border border-dashed border-line bg-surface px-3.5 py-1.5 text-sm text-fg-subtle transition hover:border-primary hover:text-primary"
       >
         ✎ 编辑分组
       </button>

@@ -238,5 +238,29 @@
     "description": "校内 AI 智能体市场",
     "category": "教务",
     "icon": "🤝"
+  },
+  {
+    "id": "akkogear-hub",
+    "name": "AKKO Drivers HUB",
+    "url": "https://hub.akkogear.com/",
+    "description": "AKKO 键盘的驱动与固件下载中心",
+    "category": "实用",
+    "icon": "⌨️"
+  },
+  {
+    "id": "deepseek-platform",
+    "name": "DeepSeek 开放平台",
+    "url": "https://platform.deepseek.com/usage",
+    "description": "DeepSeek API 平台，查看用量与余额",
+    "category": "AI",
+    "icon": "🐋"
+  },
+  {
+    "id": "openai-platform",
+    "name": "OpenAI Platform",
+    "url": "https://platform.openai.com/",
+    "description": "OpenAI API 平台，管理密钥与用量",
+    "category": "AI",
+    "icon": "🤖"
   }
 ]

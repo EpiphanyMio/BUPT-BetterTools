@@ -57,13 +57,13 @@ export default function CategoryTab({
         // touch-none：手机上按住标签时不要触发页面滚动，否则拖不动
         'touch-none select-none rounded-full px-3.5 py-1.5 text-sm ' +
         (isDragging
-          ? 'z-10 cursor-grabbing bg-sky-600 text-white opacity-80 shadow-lg'
+          ? 'z-10 cursor-grabbing bg-primary text-white opacity-80 shadow-e3'
           : 'transition ' +
             (isOver
-              ? 'scale-110 bg-sky-100 text-sky-700 ring-2 ring-sky-400'
+              ? 'scale-110 bg-primary-soft text-primary ring-2 ring-primary'
               : active
-                ? 'bg-sky-600 text-white shadow-sm'
-                : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100'))
+                ? 'bg-primary text-white shadow-e1'
+                : 'bg-surface text-fg-muted ring-1 ring-line hover:bg-surface-3'))
       }
     >
       {category}

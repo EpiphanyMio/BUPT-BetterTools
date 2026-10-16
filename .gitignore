@@ -17,3 +17,12 @@ Thumbs.db
 
 # 脚本运行时的临时产物（下划线开头的都算）
 scripts/_*
+
+# 应用 Google 风格改动前的备份（确认无误后可以手动删掉）
+.backup-before-google
+
+# DSH 技能系统自动生成的目录，与本项目无关
+.dsh
+
+# 注意：public/ 不在这里忽略 —— 里面是本地字体文件（Roboto / Noto Sans SC），
+# 是网站的一部分，需要跟着仓库一起走。

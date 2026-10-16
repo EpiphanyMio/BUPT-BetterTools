@@ -22,7 +22,7 @@ function normalizeUrl(input: string) {
 }
 
 const inputClass =
-  'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100'
+  'field'
 
 export default function ToolForm({
   category,
@@ -61,14 +61,14 @@ export default function ToolForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-fg-subtle">
         所属分组：
-        <span className="ml-1 font-medium text-slate-700">{category}</span>
+        <span className="ml-1 font-medium text-fg-muted">{category}</span>
       </p>
 
       <div>
-        <label className="mb-1 block text-sm font-medium text-slate-700">
-          名称 <span className="text-rose-500">*</span>
+        <label className="mb-1 block text-sm font-medium text-fg-muted">
+          名称 <span className="text-danger">*</span>
         </label>
         <input
           value={name}
@@ -79,8 +79,8 @@ export default function ToolForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-sm font-medium text-slate-700">
-          网址链接 <span className="text-rose-500">*</span>
+        <label className="mb-1 block text-sm font-medium text-fg-muted">
+          网址链接 <span className="text-danger">*</span>
         </label>
         <input
           value={url}
@@ -88,13 +88,13 @@ export default function ToolForm({
           placeholder="例如：https://jw.xxx.edu.cn"
           className={inputClass}
         />
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 text-xs text-fg-subtle">
           不写 https:// 也可以，保存时会自动补上
         </p>
       </div>
 
       <div>
-        <label className="mb-1 block text-sm font-medium text-slate-700">图标</label>
+        <label className="mb-1 block text-sm font-medium text-fg-muted">图标</label>
         <div className="flex items-center gap-3">
           <input
             value={icon}
@@ -104,7 +104,7 @@ export default function ToolForm({
             className={inputClass + ' flex-1'}
           />
           {/* 实时预览 */}
-          <span className="flex h-10 w-11 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-xl">
+          <span className="flex h-10 w-11 shrink-0 items-center justify-center rounded-lg bg-surface-3 text-xl">
             {icon || '🔗'}
           </span>
         </div>
@@ -114,7 +114,7 @@ export default function ToolForm({
               key={emoji}
               type="button"
               onClick={() => setIcon(emoji)}
-              className="rounded-md px-2 py-1 text-lg leading-none transition hover:bg-slate-100"
+              className="rounded-md px-2 py-1 text-lg leading-none transition hover:bg-surface-3"
             >
               {emoji}
             </button>
@@ -123,7 +123,7 @@ export default function ToolForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-sm font-medium text-slate-700">备注</label>
+        <label className="mb-1 block text-sm font-medium text-fg-muted">备注</label>
         <textarea
           value={description}
           onChange={(event) => setDescription(event.target.value)}
@@ -131,22 +131,22 @@ export default function ToolForm({
           placeholder="一句话说明，例如：查成绩、选课"
           className={inputClass + ' resize-none'}
         />
-        <p className="mt-1 text-xs text-slate-400">会显示在卡片名称下方</p>
+        <p className="mt-1 text-xs text-fg-subtle">会显示在卡片名称下方</p>
       </div>
 
       {error && (
-        <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">
+        <p className="rounded-lg bg-danger-bg px-3 py-2 text-sm text-danger">
           {error}
         </p>
       )}
 
-      <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-4">
+      <div className="flex items-center justify-between gap-2 border-t border-line-soft pt-4">
         <div>
           {onDelete && (
             <button
               type="button"
               onClick={onDelete}
-              className="rounded-lg px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-50"
+              className="btn btn-danger"
             >
               删除此工具
             </button>
@@ -156,13 +156,13 @@ export default function ToolForm({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-lg px-4 py-2 text-sm text-slate-600 ring-1 ring-slate-200 transition hover:bg-slate-100"
+            className="btn btn-outline"
           >
             取消
           </button>
           <button
             type="submit"
-            className="rounded-lg bg-sky-600 px-4 py-2 text-sm text-white shadow-sm transition hover:bg-sky-700"
+            className="btn btn-primary"
           >
             保存
           </button>

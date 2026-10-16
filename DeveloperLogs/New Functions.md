@@ -9,6 +9,100 @@
 
 ---
 
+## 2026-10-15 18:40 · Google 风格视觉改版 + 跟随系统的深浅模式
+
+整站视觉换成 Google / Material Design 观感，并支持深浅色。**功能逻辑一行没改**（拖拽、收藏、编辑、文件管理全部保持原样），只动样式层。
+
+先在独立副本 `BetterTools-Google` 上开发验证，确认无误后再合并回主项目 —— 这样改坏了也不影响主项目。
+
+### 字体：换成正牌 Google 开源字体
+
+引入 **Roboto**（拉丁）+ **Noto Sans SC**（中文）。字体文件**下载到本地** `public/fonts`（110 个 woff2 分片，4.5MB），不依赖 fonts.googleapis.com，断网也能正常显示。
+
+- 中文被切成 101 个分片是 Google Fonts 的正常做法：每个 `@font-face` 带一段 `unicode-range`，浏览器只下载页面上**真正出现**的那几个字所在的分片，首屏实际通常只加载 2~3 片。
+- 字体栈里仍保留 `Google Sans` 首选 —— 那是 Google 的闭源品牌字体，官方不对外分发，只能"如果用户装了就优先用"。
+- 用 `<link>` 引入字体 CSS 而不是 `@import`：那份 CSS 有 300KB 文字，打进主样式包会让首屏 CSS 大十倍（实测 29.7KB → 314KB）。
+
+### 主题：三层设计令牌
+
+新增 `src/google.css`（令牌）和 `src/ui.css`（组件基类），样式分三层：
+
+1. `--g-*` 原始色板（这个颜色"是什么"）
+2. `--token-*` 语义角色（这个颜色"用在哪"：surface 表面色、fg 文字、primary 主色……）
+3. `@theme inline` 登记给 Tailwind，生成 `bg-surface` / `text-fg-muted` 这类工具类
+
+分层的意义：组件只写"用途"，不写死颜色。全站 306 处 `slate-*` / `sky-*` 类名批量迁移成语义令牌后，深浅两套主题由变量自动切换，**组件里一个 `dark:` 前缀都不用写**。
+
+### 深浅模式：跟随系统 + 手动覆盖
+
+- **跟随系统**：CSS 里写 `color-scheme: light dark`，颜色用 `light-dark(浅, 深)`，浏览器自动按系统设置取色 —— 这一层**不需要任何 JS**。
+- **手动指定**：工具箱页头部加了主题按钮（跟随系统 → 浅色 → 深色循环），设置面板里也有三选一的分段控件。
+- 存进 localStorage 的是**模式**（`system`/`light`/`dark`），不是"当前是深是浅"。存"意图"才能让"跟随系统"长期有效 —— 存"当前颜色"的话，用户第二天改系统设置网页就不跟着变了。
+- `index.html` 里有一段内联脚本，在页面解析时就把主题设好，**抢在首次绘制之前**，避免深色用户看到刺眼的白屏闪烁。
+- 主题用 `useSyncExternalStore` 做成**全局单例**：头部按钮和设置弹窗读同一份状态，不会出现"弹窗显示浅色、按钮显示深色"的错位。
+
+### 视觉细节（Material 语言）
+
+- **状态层**：悬停不是换个颜色，而是叠一层半透明的当前色（用 `background-image` 渐变实现），这样同一个按钮放在任何底色上都不显脏；
+- **海拔分级**：阴影分 e1~e5 五档，卡片悬停时"升一档"而不是放大；
+- **填充式输入框**：浅底、无四周描边、底部一条线，聚焦时底线变蓝加粗（比四周描边框更像 Google）；
+- **首页**：标题四色着色，卡片图标放进品牌色淡底圆角方块，两张卡片依次淡入；
+- **工具卡片**：图标加底座、分组名做成同色系药丸，卡片错峰入场；
+- **四色点缀**：整体仍以灰白为主，Google 四色只用在标题和模块图标上，不大面积铺。
+
+### 子项 · 网址参数 `?theme=`
+
+支持 `?theme=light` / `dark` / `system` 临时指定主题，只影响本次打开、不写入 localStorage。用途是排查"某个主题下的样式问题"，或直接把链接给别人看某个主题的样子。用户一旦手动切主题，参数会被 `history.replaceState` 清掉，免得刷新后又盖掉他的选择。
+
+### 踩过的两个坑（值得记）
+
+**① `light-dark()` 的手动覆盖会失效。**
+构建时 Lightning CSS 会把 `light-dark()` 编译成兼容降级写法，降级版本判断深浅**只看媒体查询** `prefers-color-scheme`。而 CSS 规范里 `color-scheme` 属性**不会**反向影响该媒体查询的结果（浏览器刻意如此设计，否则页面能骗过系统设置）。结果就是：跟随系统正常，手动切换纹丝不动。修法是手动选定的主题用 `[data-theme]` 属性直接覆盖变量值，绕开媒体查询。
+
+**② 脚本不能用 `process.cwd()` 定位文件。**
+批量迁移脚本第一版用 `process.cwd()` 找 `src/`，而它的工作目录是主项目，于是把主项目的 13 个文件误改了。修复分两步：先按规则反向替换还原，再对仍有歧义的文件（`text-slate-500` 与 `text-slate-400` 都映射到同一个令牌，反向分不清）直接拿副本原文件覆盖。教训：脚本一律从命令行传入**绝对路径**，不依赖运行目录。
+
+*涉及文件：`src/google.css`（新增）、`src/ui.css`（新增）、`src/hooks/useTheme.ts`（新增）、`src/index.css`、`index.html`、`src/main.tsx`、`public/fonts/*`（新增，111 个字体文件）、`src/components/Home.tsx`、`src/components/ToolCard.tsx`、`src/components/GeneralSettingsPanel.tsx`、`src/components/SearchBar.tsx`、`src/components/CategoryTab.tsx`、`src/components/CategoryTabs.tsx`、`src/components/ToolForm.tsx`、`src/components/ToolEditModal.tsx`、`src/components/GroupEditor.tsx`、`src/components/GroupEditorList.tsx`、`src/components/DevSettingsContent.tsx`、`src/modules/ToolboxModule.tsx`、`src/modules/FilesModule.tsx`、`.gitignore`*
+
+---
+
+## 2026-10-15 08:18 · 「通用设置」面板 + 打开时的默认分组
+
+原本右上角的「⚙ 开发者设置」按钮改成「⚙ **通用设置**」，面板做成**两级结构**：
+
+- **第一级 · 通用设置** —— 日常选项（目前是"打开工具箱时的默认分组"）
+- **第二级 · 开发者设置** —— 点「开发者设置 ›」进入，左上角 ← 或按 Esc 返回上一级
+
+分两级是因为调试参数属于"调一次就很少再动"的东西，和日常选项混在一页会让人不知道该看哪儿。Esc 键做了分层处理：在二级窗口时先返回上一级，只有在第一级时才关闭整个面板。
+
+**新增设置项「打开工具箱时的默认分组」**：下拉选择某个分组后，每次进入「常用工具」都会自动选中它，省去手动切换。存在 localStorage 的 `better-tools:app-settings`，与开发者设置分开两份，互不干扰。
+
+**几个实现细节**：
+
+- `useAppSettings()` 必须写在 `useState(appSettings.defaultCategory)` **之前** —— 初始分组要读它的值；
+- 改动在**下次打开工具箱时**生效，不会当场把界面跳走（正在浏览时突然换分组很突兀）；
+- 选中的分组如果之后被删掉了，会自动退回「全部」（下拉和实际选中都做了兜底）。
+
+**重构**：`DevSettingsPanel` 拆成 `DevSettingsContent`（只保留内容、去掉弹窗外框），这样它才能作为二级窗口嵌进通用设置里；原来的独立面板文件已删除。
+
+*涉及文件：`src/hooks/useAppSettings.ts`（新增）、`src/components/GeneralSettingsPanel.tsx`（新增）、`src/components/DevSettingsContent.tsx`（新增，由 DevSettingsPanel 拆出）、`src/components/DevSettingsPanel.tsx`（已删除）、`src/modules/ToolboxModule.tsx`*
+
+---
+
+## 2026-10-15 08:10 · 默认清单自动同步 + 新增 3 个工具
+
+**新增 3 条工具**（来自桌面 `URLs` 文件夹里的三个 Edge 应用快捷方式）：⌨️ AKKO Drivers HUB（实用）、🐋 DeepSeek 开放平台（AI）、🤖 OpenAI Platform（AI）。默认清单从 30 条增至 33 条。
+
+提取过程有个坑值得记：这三个 `.lnk` 的目标都是 `msedge_proxy.exe`（Edge 的"安装为应用"快捷方式），**真正的网址不在"目标"里，而在"参数"里** —— 形如 `--app-url=https://hub.akkogear.com/`。只读 `TargetPath` 只能拿到 Edge 的 exe 路径，必须连 `Arguments` 一起读。
+
+**默认清单改为自动同步**。以前往 `tools.json` 加工具后，浏览器里的旧数据不会自动更新，得手动点「补充默认清单」按钮 —— 很容易忘。现在引入 `SEED_VERSION`（数据版本号，加工具就 +1）：应用启动时发现本地记的版本低于当前版本，就自动把缺的工具补进去，并记上新版本。只做加法，已有的和你自己改过的一概不动，不会重复累加。手动按钮保留作为兜底。
+
+**踩到的坑**：第一版把这个同步写在 `useTools` 的 `useEffect` 里，结果**首页完全不生效** —— 因为 `useTools` 这个 Hook 只在「常用工具」模块挂载，停在首页时根本不会执行，首页读到的数量仍是旧的。改成普通函数 `syncSeedTools()`，在 `App.tsx` 的**模块顶层**调用，保证它在任何界面渲染之前跑完。
+
+*涉及文件：`src/data/tools.json`、`src/lib/constants.ts`、`src/hooks/useTools.ts`、`src/App.tsx`*
+
+---
+
 ## 2026-10-12 14:13–14:18 · 多模块架构 + 文件管理
 
 网站从「单页工具箱」改成**多模块应用**：新增首页，原工具箱整体搬进「🔗 常用工具」模块，新增「📁 文件管理」模块，两者各是一张入口卡片，进去后右上角有「← 返回首页」。以后加新模块只要三步：首页 `cards` 加一张卡片、`ModuleId` 加一个名字、`App.tsx` 加一条渲染分支。

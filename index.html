@@ -4,6 +4,55 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>我的工具箱</title>
+    <!--
+      本地字体声明（Roboto + Noto Sans SC）。
+      为什么用 <link> 而不是在 CSS 里 @import：
+        ① CSS 规范要求 @import 排在最前，而 Tailwind 会把主样式表展开成一堆规则，
+           那样 @import 就违规了；
+        ② 这份 CSS 里注册了 110 个中文字体分片（约 300KB 文字），
+           塞进主样式包会让首屏样式大十倍。用 <link> 让它单独成文件、并行下载、可缓存。
+      为什么字体文件在 public/fonts：Vite 会把 public 目录原样发布到网站根目录，
+      所以 fonts.css 里写的 /fonts/xxx.woff2 在开发和构建后都能直接访问。
+    -->
+    <link rel="stylesheet" href="/fonts/fonts.css" />
+    <!-- 移动端浏览器地址栏的配色：跟随系统深浅，和页面底色保持一致 -->
+    <meta name="theme-color" content="#f8f9fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#131314" media="(prefers-color-scheme: dark)" />
+    <!--
+      主题防闪烁脚本。
+      为什么必须放在这里、不能只靠 React：
+        React 要先下载 JS 再执行，才能设置页面的深浅色。
+        如果用户上次选了深色，页面在这之前会用浅色画出第一帧 —— 屏幕会闪一下刺眼的白。
+        这段脚本是内联的，浏览器解析 HTML 时就同步执行，抢在第一次绘制之前把
+        color-scheme 设好，所以完全不会闪。
+      它和 src/hooks/useTheme.ts 里的逻辑必须保持一致，改一处记得改另一处。
+    -->
+    <script>
+      ;(function () {
+        try {
+          // 允许用网址参数临时指定主题，例如 ?theme=light。
+          // 它只影响这次打开，不写进 localStorage —— 去掉参数刷新就恢复原设置。
+          // 用处：排查"是不是某个主题下的样式问题"，或直接拿链接给别人看某个主题的样子。
+          var fromUrl = new URLSearchParams(location.search).get('theme')
+          var mode =
+            fromUrl === 'light' || fromUrl === 'dark' || fromUrl === 'system'
+              ? fromUrl
+              : localStorage.getItem('better-tools:theme')
+
+          if (mode === 'light' || mode === 'dark') {
+            // 两个都要设：
+            //   data-theme 决定颜色变量（google.css 里有对应的覆盖规则）
+            //   color-scheme 决定浏览器自带部件（滚动条、表单控件）的配色
+            document.documentElement.setAttribute('data-theme', mode)
+            document.documentElement.style.colorScheme = mode
+          }
+          // 值为 'system' 或读不到时什么都不做：
+          // CSS 里的 color-scheme: light dark 本来就会跟随系统 —— 这正是要的默认行为
+        } catch (e) {
+          /* 隐私模式下 localStorage 会抛错，忽略即可 */
+        }
+      })()
+    </script>
   </head>
   <body>
     <!-- React 会把整个页面渲染到这个 div 里 -->

@@ -1,0 +1,329 @@
+/* Google 风格设计令牌（Design Tokens）
+ * ================================================================
+ * 这个文件只做一件事：定义"整站通用的设计变量"，不写任何具体组件。
+ *
+ * 为什么要有这一层？
+ *   如果直接把颜色写死在每个组件里（bg-white / text-slate-800），
+ *   那么"支持深色模式"就意味着要把几十个文件里的类名逐个改一遍，改漏一处就花。
+ *   把值抽成变量后，组件只写"用途"（比如 bg-surface = 表面色），
+ *   换主题只要换掉变量本身，所有组件自动跟着变。
+ *
+ * 变量分三层，逐层往上：
+ *   ① --g-*      原始色板：这个颜色"是什么"（blue-600 就是 blue-600），不含用途
+ *   ② --token-*  语义角色：这个颜色"用在哪"（primary 主色、surface 表面色）
+ *   ③ @theme     交给 Tailwind 登记，生成 bg-surface / text-fg 这类工具类
+ *
+ * ⚠️ ② 和 ③ 为什么必须用不同的名字？
+ *   因为 Tailwind 的 @theme 会把登记的值"就地展开"到工具类里。
+ *   如果第二层叫 --color-surface、第三层也写 --color-surface: var(--color-surface)，
+ *   那就成了"变量引用自己"的自我引用，浏览器会认为这个值非法并整个丢弃 ——
+ *   表现出来就是：浅色正常，切到深色时颜色纹丝不动。所以两层必须分开命名。
+ */
+
+/* ---------------------------------------------------------------- 字体
+ * 字体文件（public/fonts）的 @font-face 声明在 src/main.tsx 里引入，
+ * 为什么不在这个文件里写 @import：
+ *   CSS 规定 @import 必须排在其他规则之前。而这个文件里 @import 'tailwindcss'
+ *   会被 Tailwind 展开成一大堆 @layer 规则，于是后面的 @import 就违规了
+ *   （构建时会报 "@import rules must precede all rules"）。
+ *   放到 JS 入口里 import，就没这个顺序限制，而且同样有"只加载一次"的效果。
+ *
+ * 关于"字体为什么被切成 110 个小文件"：
+ *   每个 @font-face 都带一段 unicode-range，声明"这一个文件只负责哪些字符"。
+ *   浏览器渲染时发现页面上出现了某几个字，才去下载覆盖这些字的那几片。
+ *   所以中文即使有 101 片，打开首页通常也只下载其中 2~3 片，几十 KB 而已。
+ */
+
+/* ------------------------------------------------- 第一层：原始色板 */
+
+:root {
+  /* Google 品牌四色（只用于点缀，不要大面积铺） */
+  --g-blue: #4285f4;
+  --g-red: #ea4335;
+  --g-yellow: #fbbc04;
+  --g-green: #34a853;
+
+  /* Google 产品界面里真正在用的蓝（比品牌蓝深，对比度更达标、更耐看） */
+  --g-blue-600: #1a73e8;
+  --g-blue-700: #1765cc;
+  --g-blue-50: #e8f0fe;
+  --g-blue-100: #d2e3fc;
+
+  /* 中性灰：Google 界面的骨架（Grey 50/100/200/300/500/600/700/900） */
+  --g-grey-50: #f8f9fa;
+  --g-grey-100: #f1f3f4;
+  --g-grey-200: #e8eaed;
+  --g-grey-300: #dadce0;
+  --g-grey-500: #9aa0a6;
+  --g-grey-600: #80868b;
+  --g-grey-700: #5f6368;
+  --g-grey-800: #3c4043;
+  --g-grey-900: #202124;
+
+  /* 深色模式（Material Dark）的灰阶。
+     规律和浅色相反：数字越大越亮，越靠近"前景"。 */
+  --g-dark-bg: #131314;
+  --g-dark-surface: #1e1f20;
+  --g-dark-surface-2: #282a2c;
+  --g-dark-surface-3: #303134;
+  --g-dark-line: #444746;
+  --g-dark-line-soft: #2c2e30;
+  --g-dark-text: #e3e3e3;
+  --g-dark-text-2: #c4c7c5;
+  --g-dark-text-3: #9aa0a6;
+
+  /* 功能色（错误 / 警告 / 成功），深浅各一套 */
+  --g-red-light: #c5221f;
+  --g-red-dark: #f28b82;
+  --g-red-bg-light: #fce8e6;
+  --g-red-bg-dark: #3c1d1b;
+  --g-yellow-light: #8a6d00;
+  --g-yellow-dark: #fdd663;
+  --g-yellow-bg-light: #fef7e0;
+  --g-yellow-bg-dark: #3b2f0b;
+  --g-green-light: #137333;
+  --g-green-dark: #81c995;
+  --g-green-bg-light: #e6f4ea;
+  --g-green-bg-dark: #15281c;
+}
+
+/* ------------------------------------------------- 第二层：语义色角色
+ *
+ * ⚠️ 核心机制是 light-dark() 这个 CSS 函数，它一次收两个值：
+ *     light-dark(浅色模式用的值, 深色模式用的值)
+ *    浏览器自己决定用哪个 —— 判断依据是当前生效的 color-scheme。
+ *
+ *    而 color-scheme 默认就是跟随系统（见下面的声明），
+ *    所以只写这一处，深浅两套主题就同时成立了，组件里一个 dark: 都不用写。
+ *    将来做"手动切换主题"，JS 只要改一下 <html> 上的 color-scheme 就能强推方向。
+ *
+ *    浏览器兼容性：light-dark() 需要 Chrome 123+ / Safari 17.5+ / Firefox 120+，
+ *    也就是 2024 年之后的浏览器。Edge 同样是 Chromium 内核，没问题。
+ */
+
+:root {
+  /* 声明本页面支持浅色和深色，跟随系统决定用哪个。
+     JS 手动切换时会改成 'light' 或 'dark' 来覆盖它。 */
+  color-scheme: light dark;
+
+  /* ---- 表面：谁铺在最底下、谁浮在上面 ---- */
+  --token-canvas: light-dark(var(--g-grey-50), var(--g-dark-bg));
+  --token-surface: light-dark(#ffffff, var(--g-dark-surface));
+  --token-surface-2: light-dark(var(--g-grey-100), var(--g-dark-surface-2));
+  --token-surface-3: light-dark(var(--g-grey-200), var(--g-dark-surface-3));
+
+  /* ---- 文字：三级层次（主信息 / 正文 / 辅助说明）---- */
+  --token-fg: light-dark(var(--g-grey-900), var(--g-dark-text));
+  --token-fg-muted: light-dark(var(--g-grey-700), var(--g-dark-text-2));
+  --token-fg-subtle: light-dark(var(--g-grey-600), var(--g-dark-text-3));
+
+  /* ---- 描边：Material 更多用描边而不是阴影来分层 ---- */
+  --token-line: light-dark(var(--g-grey-300), var(--g-dark-line));
+  --token-line-soft: light-dark(var(--g-grey-200), var(--g-dark-line-soft));
+
+  /* ---- 主色：按钮、选中态、链接 ---- */
+  --token-primary: light-dark(var(--g-blue-600), var(--g-blue-100));
+  --token-primary-hover: light-dark(var(--g-blue-700), var(--g-blue-50));
+  --token-on-primary: light-dark(#ffffff, #062e6f);
+  --token-primary-soft: light-dark(var(--g-blue-50), #2a3b52);
+  /* 状态层：Material 悬停时不是"换个颜色"，而是叠一层半透明的当前色。
+     这样同一个按钮放在任何底色上都不会显脏 —— 这是它手感的关键。 */
+  --token-primary-layer: light-dark(
+    rgba(26, 115, 232, 0.08),
+    rgba(210, 227, 252, 0.12)
+  );
+
+  /* ---- 功能色 ---- */
+  --token-danger: light-dark(var(--g-red-light), var(--g-red-dark));
+  --token-danger-bg: light-dark(var(--g-red-bg-light), var(--g-red-bg-dark));
+  --token-success: light-dark(var(--g-green-light), var(--g-green-dark));
+  --token-success-bg: light-dark(var(--g-green-bg-light), var(--g-green-bg-dark));
+  --token-warn: light-dark(var(--g-yellow-light), var(--g-yellow-dark));
+  --token-warn-bg: light-dark(var(--g-yellow-bg-light), var(--g-yellow-bg-dark));
+
+  /* ---- 海拔阴影：Material 的"数字纸张"，数字越大浮得越高 ----
+     深色模式下阴影几乎看不见，所以深色主题主要靠描边和表面色差分层，
+     这里只是把深色阴影加重一点，保留一点点立体感。 */
+  --token-e1: light-dark(0 1px 2px rgba(60, 64, 67, 0.16), 0 1px 2px rgba(0, 0, 0, 0.5));
+  --token-e2: light-dark(0 1px 3px rgba(60, 64, 67, 0.18), 0 2px 6px rgba(0, 0, 0, 0.55));
+  --token-e3: light-dark(0 4px 10px rgba(60, 64, 67, 0.2), 0 6px 16px rgba(0, 0, 0, 0.6));
+  --token-e4: light-dark(0 8px 24px rgba(60, 64, 67, 0.24), 0 10px 30px rgba(0, 0, 0, 0.7));
+  --token-e5: light-dark(0 16px 40px rgba(60, 64, 67, 0.28), 0 20px 48px rgba(0, 0, 0, 0.8));
+}
+
+/* ------------------------------------------------- 第三层：登记给 Tailwind
+ *
+ * @theme 里的键名决定了生成什么工具类：
+ *   --color-surface  →  bg-surface / text-surface / border-surface …
+ *   --radius-card    →  rounded-card
+ *   --shadow-e3      →  shadow-e3
+ *
+ * 这里用 @theme inline（而不是普通 @theme）是因为要"引用变量"：
+ *   普通 @theme 会在 :root 上再定义一份 --color-surface，
+ *   而我们的值本身又是 light-dark(...)，会多绕一层、还容易踩到自我引用；
+ *   inline 表示"直接用这个值生成工具类，不要另外定义变量"。
+ *   于是 bg-surface 生成的就是 background-color: var(--token-surface)，
+ *   而 --token-surface 里的 light-dark() 由浏览器实时求值 —— 主题因此能实时切换。
+ *
+ * 注意：这里所有值都必须"直接可得"，不能引用 --color-* 自己（自我引用会失效）。
+ */
+
+@theme inline {
+  --font-sans: 'Google Sans', 'Google Sans Text', Roboto, 'Noto Sans SC',
+    'Noto Sans', system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei',
+    'PingFang SC', sans-serif;
+
+  --color-canvas: var(--token-canvas);
+  --color-surface: var(--token-surface);
+  --color-surface-2: var(--token-surface-2);
+  --color-surface-3: var(--token-surface-3);
+  --color-fg: var(--token-fg);
+  --color-fg-muted: var(--token-fg-muted);
+  --color-fg-subtle: var(--token-fg-subtle);
+  --color-line: var(--token-line);
+  --color-line-soft: var(--token-line-soft);
+  --color-primary: var(--token-primary);
+  --color-primary-hover: var(--token-primary-hover);
+  --color-on-primary: var(--token-on-primary);
+  --color-primary-soft: var(--token-primary-soft);
+  --color-primary-layer: var(--token-primary-layer);
+  --color-danger: var(--token-danger);
+  --color-danger-bg: var(--token-danger-bg);
+  --color-success: var(--token-success);
+  --color-success-bg: var(--token-success-bg);
+  --color-warn: var(--token-warn);
+  --color-warn-bg: var(--token-warn-bg);
+
+  --shadow-e1: var(--token-e1);
+  --shadow-e2: var(--token-e2);
+  --shadow-e3: var(--token-e3);
+  --shadow-e4: var(--token-e4);
+  --shadow-e5: var(--token-e5);
+
+  /* Material 的圆角梯度：小元件 8px、卡片 12px、弹窗 28px */
+  --radius-btn: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-card: 0.75rem;
+  --radius-panel: 1.75rem;
+}
+
+/* ------------------------------------------------- 手动指定主题（覆盖系统）
+ *
+ * ⚠️ 为什么必须有这一段？这是实测踩出来的坑：
+ *
+ *   上面用 light-dark() 写的值，构建工具 Lightning CSS 会把它编译成兼容写法：
+ *       --lightningcss-light: initial;  --lightningcss-dark: ;
+ *       @media (prefers-color-scheme: dark) { :root { --lightningcss-light: ; --lightningcss-dark: initial } }
+ *   也就是说：降级版本判断深浅**只看媒体查询 prefers-color-scheme**。
+ *
+ *   而 color-scheme 这个属性，按 CSS 规范**不会**反向影响 prefers-color-scheme
+ *   媒体查询的结果（浏览器刻意这么设计，否则页面能骗过系统设置）。
+ *   所以"用户手动选深色"如果只靠改 color-scheme，在降级写法下是不生效的。
+ *
+ *   解决办法：手动选定的主题用 [data-theme] 属性直接覆盖变量值，绕开媒体查询。
+ *   theme = 'system' 时不设这个属性，于是回到上面 light-dark() / 媒体查询那套。
+ *
+ * 这一段列出的变量，必须和上面 --token-* 的定义保持一一对应 —— 漏一个，
+ * 那个颜色在手动模式下就会留在系统主题的颜色上（典型症状：只有背景变了、文字没变）。
+ */
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --token-canvas: var(--g-grey-50);
+  --token-surface: #ffffff;
+  --token-surface-2: var(--g-grey-100);
+  --token-surface-3: var(--g-grey-200);
+  --token-fg: var(--g-grey-900);
+  --token-fg-muted: var(--g-grey-700);
+  --token-fg-subtle: var(--g-grey-600);
+  --token-line: var(--g-grey-300);
+  --token-line-soft: var(--g-grey-200);
+  --token-primary: var(--g-blue-600);
+  --token-primary-hover: var(--g-blue-700);
+  --token-on-primary: #ffffff;
+  --token-primary-soft: var(--g-blue-50);
+  --token-primary-layer: rgba(26, 115, 232, 0.08);
+  --token-danger: var(--g-red-light);
+  --token-danger-bg: var(--g-red-bg-light);
+  --token-success: var(--g-green-light);
+  --token-success-bg: var(--g-green-bg-light);
+  --token-warn: var(--g-yellow-light);
+  --token-warn-bg: var(--g-yellow-bg-light);
+  --token-e1: 0 1px 2px rgba(60, 64, 67, 0.16);
+  --token-e2: 0 1px 3px rgba(60, 64, 67, 0.18);
+  --token-e3: 0 4px 10px rgba(60, 64, 67, 0.2);
+  --token-e4: 0 8px 24px rgba(60, 64, 67, 0.24);
+  --token-e5: 0 16px 40px rgba(60, 64, 67, 0.28);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --token-canvas: var(--g-dark-bg);
+  --token-surface: var(--g-dark-surface);
+  --token-surface-2: var(--g-dark-surface-2);
+  --token-surface-3: var(--g-dark-surface-3);
+  --token-fg: var(--g-dark-text);
+  --token-fg-muted: var(--g-dark-text-2);
+  --token-fg-subtle: var(--g-dark-text-3);
+  --token-line: var(--g-dark-line);
+  --token-line-soft: var(--g-dark-line-soft);
+  --token-primary: var(--g-blue-100);
+  --token-primary-hover: var(--g-blue-50);
+  --token-on-primary: #062e6f;
+  --token-primary-soft: #2a3b52;
+  --token-primary-layer: rgba(210, 227, 252, 0.12);
+  --token-danger: var(--g-red-dark);
+  --token-danger-bg: var(--g-red-bg-dark);
+  --token-success: var(--g-green-dark);
+  --token-success-bg: var(--g-green-bg-dark);
+  --token-warn: var(--g-yellow-dark);
+  --token-warn-bg: var(--g-yellow-bg-dark);
+  --token-e1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --token-e2: 0 2px 6px rgba(0, 0, 0, 0.55);
+  --token-e3: 0 6px 16px rgba(0, 0, 0, 0.6);
+  --token-e4: 0 10px 30px rgba(0, 0, 0, 0.7);
+  --token-e5: 0 20px 48px rgba(0, 0, 0, 0.8);
+}
+
+/* ------------------------------------------------- 全局基础样式 */
+
+@layer base {
+  html {
+    /* 深浅切换时让背景平滑过渡，避免"啪"地闪一下 */
+    transition: background-color 0.25s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  body {
+    background-color: var(--token-canvas);
+    color: var(--token-fg);
+    font-family: var(--font-sans);
+    /* 中文和英文混排时的抗锯齿，Material 推荐开启 */
+    -webkit-font-smoothing: antialiased;
+    /* 关掉 iOS 横屏时自动放大字号的行为 */
+    text-size-adjust: 100%;
+  }
+
+  /* 键盘 Tab 聚焦时给一个清晰的焦点圈（无障碍要求） */
+  :focus-visible {
+    outline: 3px solid var(--token-primary);
+    outline-offset: 2px;
+  }
+
+  /* 滚动条也换成 Google 那种细窄灰条 */
+  * {
+    scrollbar-color: var(--token-line) transparent;
+    scrollbar-width: thin;
+  }
+
+  /* 尊重系统里"减少动态效果"的设置：关掉全部动画与过渡。
+     这是无障碍规范 —— 前庭功能敏感的人会开启这个系统开关。 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

@@ -7,10 +7,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import seedToolsData from '../data/tools.json'
+import { SEED_VERSION } from '../lib/constants'
 import type { Tool, ToolDraft } from '../types'
 
 const TOOLS_KEY = 'better-tools:tools'
 const GROUPS_KEY = 'better-tools:groups'
+const SEED_VERSION_KEY = 'better-tools:seed-version'
 
 const seedTools = seedToolsData as Tool[]
 
@@ -184,6 +186,46 @@ export function useTools() {
     mergeSeed,
     missingSeedCount,
     resetAll,
+  }
+}
+
+/**
+ * 应用启动时调用一次：把默认清单里新增的工具补进本地数据。
+ *
+ * 为什么需要：默认清单只在"浏览器里还没有任何数据"时才会被采用，
+ * 所以往 tools.json 里加了新工具，已经在用的浏览器不会自动看到 ——
+ * 以前得手动点「补充默认清单」按钮，很容易忘。
+ * 这里用 SEED_VERSION 做标记：本地记的版本比当前低就补一次，然后记上新版本。
+ * 只做加法：已经有的、以及你自己添加或改过的一概不动。
+ *
+ * ⚠️ 它必须是**普通函数**而不是 Hook 里的 useEffect ——
+ * 因为 useTools 这个 Hook 只在「常用工具」模块挂载，
+ * 停在首页时根本不会执行，首页读到的数量就会是旧的。
+ */
+export function syncSeedTools(): void {
+  try {
+    const stored = Number(localStorage.getItem(SEED_VERSION_KEY) ?? 0)
+    if (stored >= SEED_VERSION) return
+
+    const currentTools = loadFromStorage<Tool[]>(TOOLS_KEY, [...seedTools])
+    const existingUrls = new Set(currentTools.map((tool) => normalizeUrl(tool.url)))
+    const missingTools = seedTools.filter((tool) => !existingUrls.has(normalizeUrl(tool.url)))
+
+    const currentGroups = loadFromStorage<string[]>(GROUPS_KEY, [...seedGroups])
+    const missingGroups = seedGroups.filter((group) => !currentGroups.includes(group))
+
+    if (missingTools.length > 0) {
+      localStorage.setItem(
+        TOOLS_KEY,
+        JSON.stringify([...currentTools, ...missingTools.map((tool) => ({ ...tool }))]),
+      )
+    }
+    if (missingGroups.length > 0) {
+      localStorage.setItem(GROUPS_KEY, JSON.stringify([...currentGroups, ...missingGroups]))
+    }
+    localStorage.setItem(SEED_VERSION_KEY, String(SEED_VERSION))
+  } catch {
+    // 浏览器禁用了本地存储时静默跳过，不影响其它功能
   }
 }
 

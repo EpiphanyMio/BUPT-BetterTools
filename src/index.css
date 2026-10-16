@@ -1,7 +1,15 @@
-@import "tailwindcss";
+/* 样式总入口。
+ *
+ * 这里只有几行 import，因为样式被拆成了三层，各管一件事：
+ *   ① google.css  设计令牌（颜色 / 字体 / 阴影 / 圆角 / 缓动）
+ *   ② ui.css      通用组件基类（按钮 / 输入框 / 弹窗 / 卡片）
+ *   ③ 各组件里的 Tailwind 工具类（具体某个元素长什么样）
+ *
+ * 为什么 import 顺序不能随便调：
+ *   Tailwind 自带一套"基础重置"（preflight），会清掉浏览器默认样式。
+ *   令牌必须排在 Tailwind 之后，才能覆盖掉那些默认值。
+ */
 
-/* 让中英文混排看起来更自然 */
-body {
-  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei',
-    'PingFang SC', sans-serif;
-}
+@import 'tailwindcss';
+@import './google.css';
+@import './ui.css';

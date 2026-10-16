@@ -111,26 +111,26 @@ export default function GroupEditor({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/50 p-4 sm:py-10"
+      className="scrim p-4 sm:py-10"
       onClick={() => {
         // 填表单时点背景不关闭，避免误触丢内容
         if (!editing) onClose()
       }}
     >
       <div
-        className="mx-auto w-full max-w-2xl rounded-2xl bg-white shadow-2xl"
+        className="modal-panel mx-auto w-full max-w-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         {/* 头部 */}
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-900">
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <h2 className="text-lg font-semibold text-fg">
             {editing ? (editingTool ? '编辑工具' : '添加工具') : '编辑分组'}
           </h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="关闭"
-            className="rounded-lg px-2 py-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+            className="btn-icon btn"
           >
             ✕
           </button>
@@ -156,14 +156,14 @@ export default function GroupEditor({
               {/* 默认清单有更新时的提示条。
                   放在最上面是有意的：以前这个入口在弹窗最底部，要滚动才能看到，很容易被忽略。 */}
               {missingSeedCount > 0 && (
-                <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-3">
-                  <span className="text-sm text-sky-800">
+                <div className="mb-4 flex flex-wrap items-center gap-3 rounded-btn border border-line bg-surface-2 px-3.5 py-3">
+                  <span className="text-sm text-primary-hover">
                     📦 默认清单里有 <b>{missingSeedCount}</b> 个工具你还没有
                   </span>
                   <button
                     type="button"
                     onClick={handleMergeSeed}
-                    className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white shadow-sm transition hover:bg-sky-700"
+                    className="btn btn-primary"
                   >
                     补充到我的工具箱
                   </button>
@@ -171,14 +171,14 @@ export default function GroupEditor({
               )}
 
               {mergeNote && (
-                <p className="mb-4 rounded-xl bg-sky-50 px-3.5 py-2 text-sm text-sky-700">
+                <p className="mb-4 rounded-btn bg-surface-2 px-3.5 py-2 text-sm text-primary">
                   {mergeNote}
                 </p>
               )}
 
               {/* 一键添加新分组 */}
-              <div className="mb-5 rounded-xl bg-slate-50 p-3">
-                <label className="mb-1 block text-sm font-medium text-slate-700">
+              <div className="mb-5 rounded-btn bg-surface-2 p-3">
+                <label className="mb-1 block text-sm font-medium text-fg-muted">
                   添加新分组
                 </label>
                 <div className="flex gap-2">
@@ -189,12 +189,12 @@ export default function GroupEditor({
                       if (event.key === 'Enter') handleAddGroup()
                     }}
                     placeholder="例如：教务"
-                    className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+                    className="field"
                   />
                   <button
                     type="button"
                     onClick={handleAddGroup}
-                    className="rounded-lg bg-sky-600 px-4 py-2 text-sm text-white shadow-sm transition hover:bg-sky-700"
+                    className="btn btn-primary"
                   >
                     添加
                   </button>
@@ -213,18 +213,18 @@ export default function GroupEditor({
               />
 
               {/* 恢复默认 */}
-              <div className="mt-6 border-t border-slate-100 pt-4">
+              <div className="mt-6 border-t border-line-soft pt-4">
                 <button
                   type="button"
                   onClick={handleReset}
-                  className="text-sm text-slate-400 transition hover:text-rose-600"
+                  className="text-sm text-fg-subtle transition hover:text-danger"
                 >
                   恢复默认数据
                 </button>
-                <p className="mt-2 text-xs text-slate-400">
+                <p className="mt-2 text-xs text-fg-subtle">
                   只清空你在本机做过的全部修改，还原成默认清单。
                 </p>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-fg-subtle">
                   提示：所有修改都保存在这台设备的浏览器里，不会上传到服务器。
                 </p>
               </div>

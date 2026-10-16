@@ -59,10 +59,12 @@ export default function ToolCard({
     willChange: isDragging ? 'transform' : undefined,
   }
 
-  // 静止时才用 transition（让悬停的阴影/上浮有动画）；拖动时一律不加
+  // 静止时才用 transition（让悬停的阴影/上浮有动画）；拖动时一律不加。
+  // 拖动时用 border-primary（主色描边）来表示"这张正在被拖"，
+  // 而不是靠放大 —— Material 里"选中/激活"是描边和海拔变化，不是缩放。
   const cardClass = isDragging
-    ? 'z-10 cursor-grabbing border-sky-400 opacity-80 shadow-lg'
-    : 'transition hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md'
+    ? 'z-10 cursor-grabbing border-primary opacity-80 shadow-e4'
+    : 'card-hover'
 
   function handleQuickDelete() {
     setMenuOpen(false)
@@ -77,8 +79,8 @@ export default function ToolCard({
       style={style}
       className={
         // pb-10 是给右下角的按钮留出的位置
-        'group relative rounded-2xl border border-slate-200 bg-white p-4 pb-10 pl-9 shadow-sm ' +
-        cardClass
+        // card 提供基础样式（表面色/描边/圆角/最低海拔），cardClass 负责悬停与拖动
+        'card group relative p-4 pb-10 pl-9 ' + cardClass
       }
     >
       {/* 拖动把手：只有按住这里才会开始拖动，不影响点链接和收藏 */}
@@ -89,7 +91,7 @@ export default function ToolCard({
         type="button"
         title="按住拖动调整顺序"
         aria-label="按住拖动调整顺序"
-        className="absolute left-1.5 top-3.5 cursor-grab touch-none rounded p-1 text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 active:cursor-grabbing"
+        className="absolute left-1.5 top-3.5 cursor-grab touch-none rounded p-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg-muted active:cursor-grabbing"
       >
         <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
           <circle cx="2.5" cy="3" r="1.4" />
@@ -110,19 +112,23 @@ export default function ToolCard({
         className="block pr-8"
       >
         <div className="flex items-center gap-3">
-          <span className="text-2xl">{tool.icon ?? '🔗'}</span>
-          <span className="font-semibold text-slate-800 group-hover:text-sky-700">
-            {tool.name}
+          {/* 图标底座：Google 产品里图标都装在一个淡色圆角方块里，比裸 emoji 更有体系感。
+              用 surface-2 而不是彩色的，是为了让同一个淡底承载各种 emoji 都不打架。 */}
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-btn bg-surface-2 text-xl">
+            {tool.icon ?? '🔗'}
           </span>
+          <span className="font-medium text-fg">{tool.name}</span>
         </div>
 
         {tool.description && (
-          <p className="mt-2 text-sm leading-relaxed text-slate-500">
+          <p className="mt-2 text-sm leading-relaxed text-fg-subtle">
             {tool.description}
           </p>
         )}
 
-        <span className="mt-3 inline-block rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
+        {/* 分组名做成 Google 风格的药丸：淡主色底 + 主色文字。
+            悬停整张卡片时底色略微加深，表示"这张卡片是活的"。 */}
+        <span className="mt-3 inline-block rounded-full bg-surface-3 px-2.5 py-0.5 text-xs font-medium text-fg-muted transition-colors group-hover:bg-primary-soft group-hover:text-primary">
           {tool.category}
         </span>
       </a>
@@ -135,7 +141,7 @@ export default function ToolCard({
         aria-label={isFavorite ? '取消收藏' : '收藏'}
         className={
           'absolute right-3 top-3 text-xl leading-none transition ' +
-          (isFavorite ? 'text-amber-400' : 'text-slate-300 hover:text-amber-400')
+          (isFavorite ? 'text-warn' : 'text-fg-subtle hover:text-warn')
         }
       >
         {isFavorite ? '★' : '☆'}
@@ -151,29 +157,29 @@ export default function ToolCard({
           className={
             'rounded-lg px-2 py-1 text-sm leading-none transition ' +
             (menuOpen
-              ? 'bg-sky-100 text-sky-700'
-              : 'text-slate-300 hover:bg-slate-100 hover:text-slate-600')
+              ? 'bg-primary-soft text-primary'
+              : 'text-fg-subtle hover:bg-surface-3 hover:text-fg-muted')
           }
         >
           ✎
         </button>
 
         {menuOpen && (
-          <div className="absolute bottom-full right-0 mb-1 w-24 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+          <div className="absolute bottom-full right-0 mb-1 w-28 overflow-hidden rounded-btn border border-line bg-surface py-1 shadow-e3">
             <button
               type="button"
               onClick={() => {
                 setMenuOpen(false)
                 onEdit(tool.id)
               }}
-              className="block w-full px-3 py-1.5 text-left text-sm text-slate-600 transition hover:bg-slate-100"
+              className="block w-full px-3 py-1.5 text-left text-sm text-fg-muted transition hover:bg-surface-3"
             >
               ✎ 编辑
             </button>
             <button
               type="button"
               onClick={handleQuickDelete}
-              className="block w-full px-3 py-1.5 text-left text-sm text-rose-600 transition hover:bg-rose-50"
+              className="block w-full px-3 py-1.5 text-left text-sm text-danger transition hover:bg-danger-bg"
             >
               🗑 删除
             </button>

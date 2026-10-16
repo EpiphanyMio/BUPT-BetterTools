@@ -91,8 +91,8 @@ function NodeRow({
     <li
       ref={setRefs}
       className={
-        'flex items-center gap-2 border-b border-slate-100 px-3 py-3 transition last:border-b-0 ' +
-        (isOver ? 'bg-sky-50 ring-2 ring-inset ring-sky-400 ' : 'hover:bg-slate-50 ') +
+        'flex items-center gap-2 border-b border-line-soft px-3 py-3 transition last:border-b-0 ' +
+        (isOver ? 'bg-surface-2 ring-2 ring-inset ring-primary ' : 'hover:bg-surface-2 ') +
         (isDragging ? 'opacity-40' : '')
       }
     >
@@ -101,7 +101,7 @@ function NodeRow({
         checked={selected}
         onChange={() => onToggleSelect(node.id)}
         aria-label={'选择 ' + node.name}
-        className="h-4 w-4 shrink-0 accent-sky-600"
+        className="check"
       />
 
       {/* 拖动把手：只有按住这里才开始拖，不影响勾选和点击 */}
@@ -111,7 +111,7 @@ function NodeRow({
         type="button"
         title="按住拖动，可移到别的文件夹"
         aria-label="按住拖动，可移到别的文件夹"
-        className="shrink-0 cursor-grab touch-none rounded p-1 text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 active:cursor-grabbing"
+        className="shrink-0 cursor-grab touch-none rounded p-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg-subtle active:cursor-grabbing"
       >
         <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
           <circle cx="2.5" cy="3" r="1.4" />
@@ -133,12 +133,12 @@ function NodeRow({
         className="min-w-0 flex-1 text-left"
         title={node.kind === 'folder' ? '打开文件夹' : '打开文件'}
       >
-        <span className="block truncate font-medium text-slate-800">{node.name}</span>
-        <span className="block truncate text-xs text-slate-400">
+        <span className="block truncate font-medium text-fg">{node.name}</span>
+        <span className="block truncate text-xs text-fg-subtle">
           {node.kind === 'folder' ? '文件夹' : formatBytes(node.size)}
           {' · '}
           {formatTime(node.updatedAt)}
-          {hint && <span className="text-sky-600">{' · 在 ' + hint}</span>}
+          {hint && <span className="text-primary">{' · 在 ' + hint}</span>}
         </span>
       </button>
 
@@ -147,7 +147,7 @@ function NodeRow({
           <button
             type="button"
             onClick={() => onOpen(node)}
-            className="rounded-lg px-2 py-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+            className="rounded-lg px-2 py-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg"
           >
             打开
           </button>
@@ -156,7 +156,7 @@ function NodeRow({
           <button
             type="button"
             onClick={() => onDownload(node)}
-            className="rounded-lg px-2 py-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+            className="rounded-lg px-2 py-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg"
           >
             下载
           </button>
@@ -164,14 +164,14 @@ function NodeRow({
         <button
           type="button"
           onClick={() => onRename(node)}
-          className="rounded-lg px-2 py-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+          className="rounded-lg px-2 py-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg"
         >
           重命名
         </button>
         <button
           type="button"
           onClick={() => onDelete(node)}
-          className="rounded-lg px-2 py-1 text-rose-500 transition hover:bg-rose-50"
+          className="rounded-lg px-2 py-1 text-danger transition hover:bg-danger-bg"
         >
           删除
         </button>
@@ -193,10 +193,10 @@ function RootDropChip({ active, onClick }: { active: boolean; onClick: () => voi
       className={
         'rounded-lg px-2 py-1 transition ' +
         (isOver
-          ? 'bg-sky-100 font-medium text-sky-700 ring-2 ring-sky-400'
+          ? 'bg-primary-soft font-medium text-primary ring-2 ring-primary'
           : active
-            ? 'font-medium text-slate-800'
-            : 'text-slate-500 hover:bg-slate-100')
+            ? 'font-medium text-fg'
+            : 'text-fg-subtle hover:bg-surface-3')
       }
     >
       🏠 根目录
@@ -516,12 +516,12 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
   const allSelected = rows.length > 0 && rows.every((row) => selected.has(row.node.id))
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800">
+    <div className="min-h-screen bg-surface-2 text-fg">
       <div className="mx-auto max-w-5xl px-4 py-8">
         <header className="mb-5 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-slate-900">📁 文件管理</h1>
-            <p className="mt-1 text-sm text-slate-500">
+            <h1 className="text-3xl font-bold tracking-tight text-fg">📁 文件管理</h1>
+            <p className="mt-1 text-sm text-fg-subtle">
               {stats
                 ? stats.fileCount + ' 个文件 · ' + stats.folderCount + ' 个文件夹 · ' + formatBytes(stats.bytes)
                 : '读取中…'}
@@ -530,14 +530,14 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
           <button
             type="button"
             onClick={onBack}
-            className="shrink-0 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-100"
+            className="shrink-0 rounded-btn border border-line bg-surface px-3.5 py-2 text-sm text-fg-muted shadow-e1 transition hover:border-line hover:bg-surface-3"
           >
             ← 返回首页
           </button>
         </header>
 
         {/* 存储位置说明：这件事必须说清楚，否则用户会以为文件在云端 */}
-        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
+        <div className="mb-4 rounded-btn border border-warn bg-warn-bg px-4 py-3 text-xs leading-relaxed text-warn">
           <b>这些文件只存在这台电脑的这个浏览器里，没有上传到任何服务器。</b>
           <br />
           换设备、换浏览器、或用「清除浏览数据」都会看不到它们。
@@ -556,7 +556,7 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
             type="button"
             onClick={handleCreateFolder}
             disabled={busy}
-            className="rounded-xl bg-white px-3.5 py-2 text-sm text-slate-700 ring-1 ring-slate-200 transition hover:bg-slate-100 disabled:opacity-50"
+            className="rounded-btn bg-surface px-3.5 py-2 text-sm text-fg-muted ring-1 ring-line transition hover:bg-surface-3 disabled:opacity-50"
           >
             📁 新建文件夹
           </button>
@@ -564,7 +564,7 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={busy}
-            className="rounded-xl bg-sky-600 px-3.5 py-2 text-sm text-white shadow-sm transition hover:bg-sky-700 disabled:opacity-50"
+            className="btn btn-primary disabled:opacity-50"
           >
             ⬆ 上传文件
           </button>
@@ -580,31 +580,31 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="🔍 搜索文件名…"
-            className="min-w-[10rem] flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+            className="min-w-[10rem] flex-1 rounded-btn border border-line bg-surface px-3.5 py-2 text-sm outline-none transition"
           />
 
-          {busy && <span className="text-sm text-slate-400">处理中…</span>}
+          {busy && <span className="text-sm text-fg-subtle">处理中…</span>}
         </div>
 
         {notice && (
-          <p className="mb-3 rounded-xl bg-sky-50 px-4 py-2 text-sm text-sky-700">{notice}</p>
+          <p className="mb-3 rounded-btn bg-surface-2 px-4 py-2 text-sm text-primary">{notice}</p>
         )}
 
         {/* 批量选择操作条 */}
         {selected.size > 0 && (
-          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm">
-            <span className="text-slate-700">已选 <b>{selected.size}</b> 项</span>
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-btn border border-line bg-surface px-4 py-2.5 text-sm shadow-e1">
+            <span className="text-fg-muted">已选 <b>{selected.size}</b> 项</span>
             <button
               type="button"
               onClick={allSelected ? () => setSelected(new Set()) : selectAllVisible}
-              className="text-sky-600 transition hover:text-sky-800"
+              className="text-primary transition hover:text-primary-hover"
             >
               {allSelected ? '取消全选' : '全选当前列表'}
             </button>
             <button
               type="button"
               onClick={() => setSelected(new Set())}
-              className="text-slate-400 transition hover:text-slate-600"
+              className="text-fg-subtle transition hover:text-fg-muted"
             >
               取消选择
             </button>
@@ -612,7 +612,7 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
               type="button"
               onClick={handleDeleteSelected}
               disabled={busy}
-              className="ml-auto rounded-lg bg-rose-600 px-3 py-1.5 text-white transition hover:bg-rose-700 disabled:opacity-50"
+              className="ml-auto rounded-lg bg-danger px-3 py-1.5 text-white transition hover:bg-danger disabled:opacity-50"
             >
               🗑 删除选中
             </button>
@@ -632,15 +632,15 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
               <RootDropChip active={currentId === ''} onClick={() => setCurrentId('')} />
               {path.map((node) => (
                 <span key={node.id} className="flex items-center gap-1">
-                  <span className="text-slate-300">›</span>
+                  <span className="text-fg-subtle">›</span>
                   <button
                     type="button"
                     onClick={() => setCurrentId(node.id)}
                     className={
                       'rounded-lg px-2 py-1 transition ' +
                       (node.id === currentId
-                        ? 'font-medium text-slate-800'
-                        : 'text-slate-500 hover:bg-slate-100')
+                        ? 'font-medium text-fg'
+                        : 'text-fg-subtle hover:bg-surface-3')
                     }
                   >
                     {node.name}
@@ -651,12 +651,12 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
           )}
 
           {searching && (
-            <p className="mb-3 text-sm text-slate-500">
+            <p className="mb-3 text-sm text-fg-subtle">
               搜索「{query.trim()}」：找到 <b>{hits.length}</b> 项
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                className="ml-3 text-sky-600 transition hover:text-sky-800"
+                className="ml-3 text-primary transition hover:text-primary-hover"
               >
                 清除搜索
               </button>
@@ -664,13 +664,13 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
           )}
 
           {rows.length === 0 ? (
-            <p className="rounded-2xl border border-dashed border-slate-300 bg-white py-14 text-center text-sm text-slate-400">
+            <p className="rounded-card border border-dashed border-line bg-surface-2 py-14 text-center text-sm text-fg-subtle">
               {searching
                 ? '没有找到名字包含这个关键词的文件或文件夹'
                 : '这里是空的 —— 点上面的「新建文件夹」或「上传文件」开始'}
             </p>
           ) : (
-            <ul className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <ul className="overflow-hidden rounded-card border border-line bg-surface shadow-e1">
               {rows.map((row) => (
                 <NodeRow
                   key={row.node.id}
@@ -690,9 +690,9 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
           {/* 拖动时跟着鼠标的"漂浮副本" */}
           <DragOverlay dropAnimation={null}>
             {dragging && (
-              <div className="flex items-center gap-2 rounded-xl border border-sky-300 bg-white px-3 py-2 text-sm shadow-lg">
+              <div className="flex items-center gap-2 rounded-btn border border-primary bg-surface px-3 py-2 text-sm shadow-e3">
                 <span className="text-lg">{iconFor(dragging.name, dragging.kind)}</span>
-                <span className="max-w-[14rem] truncate font-medium text-slate-800">
+                <span className="max-w-[14rem] truncate font-medium text-fg">
                   {dragging.name}
                 </span>
               </div>
@@ -700,7 +700,7 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
           </DragOverlay>
         </DndContext>
 
-        <p className="mt-6 text-center text-xs text-slate-400">
+        <p className="mt-6 text-center text-xs text-fg-subtle">
           按住行左侧的 ⠿ 拖动，把它丢到别的文件夹上即可移动 · 图片和 PDF 可以直接在浏览器里打开，
           Word / Excel 这类需要下载后用本地软件打开。
         </p>
