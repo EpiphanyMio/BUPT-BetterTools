@@ -55,14 +55,22 @@ export interface SyncSnapshot {
   data: SyncData | null
 }
 
-// 同步状态机的六个状态：
-//   unconfigured —— 还没填令牌，什么都不做
-//   idle         —— 填了令牌，等着第一次同步
+// 同步状态机的七个状态：
+//   unauthenticated —— 没登录（没有会话令牌），一个请求都不发
+//   unconfigured —— 旧版"没填共享令牌"留下的状态，现在已经不会出现，保留只是为了兼容旧代码
+//   idle         —— 已登录，等着第一次同步
 //   syncing      —— 请求发出去了、还没回来
 //   synced       —— 本地和云端一致
 //   offline      —— 连不上服务器（断网 / 服务没起来），本地照常可用
 //   error        —— 服务器明确报错（令牌失效、数据超限…），需要人看一眼
-export type SyncStatus = 'unconfigured' | 'idle' | 'syncing' | 'synced' | 'error' | 'offline'
+export type SyncStatus =
+  | 'unauthenticated'
+  | 'unconfigured'
+  | 'idle'
+  | 'syncing'
+  | 'synced'
+  | 'error'
+  | 'offline'
 
 // 给界面读的状态。整个应用只有一份，由 src/lib/sync.ts 维护并缓存在模块顶层。
 export interface SyncState {
@@ -71,5 +79,43 @@ export interface SyncState {
   updatedAt: number     // 云端那份数据最后一次被写入的时间
   lastError: string     // 中文错误说明，没出错时是空字符串
   lastSyncedAt: number  // 这台设备上次同步成功的时间，0 表示本次打开还没成功过
+}
+
+// ---------------------------------------------------------------- 多用户登录
+//
+// 下面这几样只给「登录 / 邀请码」用（src/lib/auth.ts、src/components/AuthScreen.tsx、
+// src/components/InviteAdmin.tsx）。它们的形状必须和 worker/ 里的接口契约一致 ——
+// 前后端共用同一份约定，改一处就得同时改另一处。
+
+// 当前登录的人。
+//
+// isAdmin 只能来自服务器（登录、注册、GET /api/auth/me 这三个响应）。
+// 为什么不存进 localStorage：存了就能被手动改，管理员区块虽然只是"显示"，但界面
+// 一旦按假身份渲染，用户会以为那些操作真的生效了 —— 服务端回 403 之后更难解释。
+export interface AuthUser {
+  id: number
+  username: string
+  isAdmin: boolean
+}
+
+// 登录状态机三态：
+//   loading       —— 本地存着令牌，正在向服务器确认它还有没有效
+//   anonymous     —— 没有令牌（或者令牌已失效），只显示登录界面
+//   authenticated —— 令牌有效，已经拿到 user
+export type AuthStatus = 'loading' | 'anonymous' | 'authenticated'
+
+// 给界面读的状态。整个应用只有一份，由 src/lib/auth.ts 维护并缓存在模块顶层。
+export interface AuthState {
+  status: AuthStatus
+  user: AuthUser | null   // 只有 authenticated 时才有值
+  lastError: string       // 中文错误说明，没出错时是空字符串
+}
+
+// 一条邀请码。每个邀请码只能注册一个账号，用过之后会记下是谁用的。
+export interface Invite {
+  code: string
+  createdAt: number        // 创建时间（毫秒时间戳）
+  usedBy: string | null    // 使用者的用户名；没用过是 null
+  usedAt: number | null    // 使用时间（毫秒时间戳）；没用过是 null
 }
 

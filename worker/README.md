@@ -1,12 +1,14 @@
-# 多端数据同步 · Cloudflare Worker 后端
+# 账号体系 + 多端同步 · Cloudflare Worker 后端
 
-这个目录是网站的**同源 API**：手机和电脑通过它共用一份数据。
+这个目录是网站的**同源 API**：账号、登录态、邀请码，以及每人一份的云端快照。
 
 网页本身还是那个纯静态站点，这个 Worker 只接管 `/api/*` 这几条路径，
 其余请求（页面、字体、图片）原样交回静态资源层，访问方式和以前一样。
 
-前端那侧已经写好了（`src/lib/sync.ts` / `src/hooks/useSync.ts`），
-两边按同一份契约 **v1** 对接，这里不需要改前端一行代码。
+> **v1 → v2**：原来是一个共享令牌（`SYNC_TOKEN`）读写全库唯一一份快照；
+> 现在是用户名 + 密码换会话令牌，数据按用户分行存。
+> **`SYNC_TOKEN` 从这一版起不再参与任何鉴权**（代码里还读得到这个字段，但没有任何逻辑用它），
+> 线上那个 secret 可以删掉了。
 
 ---
 
@@ -14,42 +16,61 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `worker/index.ts` | Worker 主程序：路由、鉴权、校验、乐观锁写入 |
-| `worker/schema.sql` | D1 建表语句（只有一张 `snapshot` 表，永远一行） |
+| `worker/index.ts` | 路由表、快照读写（含乐观锁）、邀请码接口、认证接口 |
+| `worker/auth.ts` | 密码哈希 / 校验、定长时间比较、会话令牌与会话查询、格式校验 |
+| `worker/d1.ts` | 手写的 D1 最小类型（不装 `@cloudflare/workers-types`） |
+| `worker/schema.sql` | 建表 + 从 v1 单用户结构迁移，**可重复执行** |
 | `worker/README.md` | 本文件 |
-| `wrangler.jsonc` | 新增了 `main` 和 `d1_databases` 两个字段 |
-| `.dev.vars` | **本地**开发用的令牌（已被 `.gitignore` 忽略，不会进仓库） |
+| `scripts/_auth-e2e.mjs` | 等价环境下的端到端验证脚本（本地临时工具，已被 gitignore） |
+
+前端那侧的实现（`src/lib/auth.ts` / `src/hooks/useAuth.ts` / `src/lib/sync.ts` /
+`src/components/AuthScreen.tsx` / `src/components/InviteAdmin.tsx`）按同一份契约 **v2** 对接。
 
 ---
 
-## 2. 接口契约 v1
+## 2. 接口契约 v2
 
-所有请求都要带 `Authorization: Bearer <TOKEN>`，TOKEN 是 Worker 的 secret `env.SYNC_TOKEN`。
+带的身份都是 `Authorization: Bearer <token>`，token 是登录 / 注册返回的那 64 位 hex 串。
 
-### GET /api/snapshot
+`user` 的形状：
 
-```
-200 → { revision: number, updatedAt: number, data: SyncData | null }
-401 → { error: "unauthorized" }
-```
-
-云端从未存过数据时返回 `{ revision: 0, updatedAt: 0, data: null }`（不是 404）。
-
-### PUT /api/snapshot
-
-请求体 `{ baseRevision: number, data: SyncData }`
-
-```
-200 → { revision: number, updatedAt: number }
-409 → { error: "conflict", snapshot: { revision, updatedAt, data } }
-400 → { error: "bad-request", message: string }
-401 → { error: "unauthorized" }
+```ts
+{ id: number, username: string, isAdmin: boolean }
 ```
 
-`baseRevision` 是「我以为云端现在是第几版」。它和云端当前 revision 不一致就返回 409，
-并把云端**当前**那份快照一起带回去，前端会直接采用它（约定「云端胜」）。
+### 2.1 认证
 
-### 数据形状
+| 方法 / 路径 | 请求体 | 成功 | 失败 |
+| --- | --- | --- | --- |
+| `POST /api/auth/register` | `{ username, password, inviteCode }` | `201 { token, user }` | `400 bad-request`（格式不合规）、`403 invalid-invite`、`409 username-taken` |
+| `POST /api/auth/login` | `{ username, password }` | `200 { token, user }` | `401 invalid-credentials`（查无此人和密码错**都**是这一个）、`400 bad-request` |
+| `POST /api/auth/logout` | 无（需登录） | `204` | `401 unauthorized` |
+| `GET /api/auth/me` | 无（需登录） | `200 { user }` | `401 unauthorized` |
+
+### 2.2 邀请码（仅管理员）
+
+| 方法 / 路径 | 请求体 | 成功 | 失败 |
+| --- | --- | --- | --- |
+| `GET /api/invites` | — | `200 { invites: [{ code, createdAt, usedBy, usedAt }] }` | `401` / `403 forbidden` |
+| `POST /api/invites` | `{}` 或 `{ code }` | `201 { code }` | `400`（自定义码格式不对）、`409 code-taken`（契约外的补充） |
+| `DELETE /api/invites/{code}` | — | `204` | `404 not-found` |
+
+- `invites` 按 `createdAt` 倒序；`usedBy` 是**用户名**（没用过是 `null`），`usedAt` 没用过也是 `null`。
+- 不带 `code` 时服务端生成 12 位 `[A-Z0-9]`；带 `code` 时要求 6-32 位 `[A-Za-z0-9-]`。
+- 已登录但不是管理员 → `403`；**没有身份** → `401`（先认人，再谈权限，前端据此决定是跳登录页还是提示没权限）。
+
+### 2.3 快照（需登录，按用户隔离）
+
+| 方法 / 路径 | 请求体 | 成功 | 失败 |
+| --- | --- | --- | --- |
+| `GET /api/snapshot` | — | `200 { revision, updatedAt, data }` | `401 unauthorized` |
+| `PUT /api/snapshot` | `{ baseRevision, data }` | `200 { revision, updatedAt }` | `409 { error: "conflict", snapshot: { revision, updatedAt, data } }`、`400 bad-request`、`401` |
+
+- **每个人只看得到自己那一行**：所有查询都带 `WHERE user_id = ?`。
+- 从没存过数据 → `{ revision: 0, updatedAt: 0, data: null }`（不是 404）。
+- `baseRevision` 和云端 `revision` 不一致 → `409`，并把云端**当前**那份带回去（约定「云端胜」）。
+
+### 2.4 数据形状
 
 ```ts
 interface SyncData {
@@ -61,143 +82,178 @@ interface SyncData {
 }
 ```
 
-限制：请求体 ≤ **256KB**，`tools` ≤ **500** 条，超了返回 400。
+限制（和 `src/lib/sync.ts` 里那两个常量一起改）：请求体 ≤ **256KB**，`tools` ≤ **500** 条。
 
-### 其它行为
+### 2.5 其它行为
 
 - 未知的 `/api/*` 路径 → `404 { error: "not-found" }`，**不会**落到静态资源返回 index.html；
-- `OPTIONS` 预检 → `204`（同源其实用不到，留着方便用 curl / 别的端口调）；
-- 已定义路径上的其它方法（如 POST）→ `405`；
-- 所有响应都带 `Content-Type: application/json; charset=utf-8` 和 `Cache-Control: no-store`。
+- `OPTIONS` → `204`（同源其实用不到，留着方便 curl / vite 代理）；
+- 已定义路径上的其它方法 → `405`（带 `allow` 头）；
+- 结尾多一个斜杠（`/api/snapshot/`）也能路由；
+- 所有响应都带 `content-type: application/json; charset=utf-8` 和 `cache-control: no-store`；
+- 没被捕获的异常兜成 `500 { error: "server-error" }`（具体原因只进 `console`，用 `wrangler tail` 看）。
+
+### 2.6 错误码一览
+
+`bad-request`、`unauthorized`、`forbidden`、`invalid-credentials`、`invalid-invite`、
+`username-taken`、`code-taken`、`conflict`、`not-found`、`method-not-allowed`、`server-error`。
 
 ---
 
-## 3. 本地开发
+## 3. 安全参数（两种语言必须完全一致）
+
+| 参数 | 值 |
+| --- | --- |
+| 密码哈希 | PBKDF2-SHA256，`iterations = 100000`，输出 32 字节，盐 16 字节随机 |
+| 落库格式 | `password_hash` 64 位 hex、`salt` 32 位 hex、`iterations` 整数 |
+| 比较方式 | 定长时间比较（`auth.ts` 的 `safeEqualHex`），不用 `===` |
+| 会话令牌 | 32 字节随机 → 64 位 hex 交给客户端 |
+| 库里的令牌 | **只存它的 sha256（hex）**，不存明文 |
+| 有效期 | 30 天 |
+| 用户名 | 3-32 位 `[A-Za-z0-9_-]`，比较**不区分大小写**（`COLLATE NOCASE` + `UNIQUE`） |
+| 密码 | 至少 8 位（服务端上限 128 位，防止拿超长密码当 CPU 炸弹） |
+
+服务端实现用 WebCrypto：`importKey('raw', ...)` +
+`deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, 256)`。
+`scripts/_auth-e2e.mjs` 里用 `node:crypto` 的 `pbkdf2Sync` 交叉验证过：两边算出来的哈希逐字节一致。
+
+---
+
+## 4. 数据库
+
+### 4.1 四张表
+
+```
+users(id, username UNIQUE COLLATE NOCASE, password_hash, salt, iterations, is_admin, created_at)
+sessions(token_hash PRIMARY KEY, user_id, created_at, expires_at)
+invites(code PRIMARY KEY, created_by, created_at, used_by, used_at)
+snapshot(user_id PRIMARY KEY, revision, updated_at, data)
+```
+
+时间一律是毫秒时间戳（`Date.now()`）。
+
+### 4.2 迁移（v1 的单行快照 → v2 的每人一行）
+
+`worker/schema.sql` 末尾那段就是迁移，**不需要单独准备迁移文件**，直接跑它就行。
+它是按 SQLite 官方的「重建表」套路写的，而且每一步都写成「重复执行只是空转」：
+
+1. 先按**旧结构**保证 `snapshot` 这个名字存在（全新库里建出来的是一张空表，正好当过渡）；
+2. 按新结构建 `snapshot_v2`；
+3. `INSERT OR IGNORE INTO snapshot_v2 SELECT * FROM snapshot` —— 两张表都是 4 列、顺序一致
+   （旧的 `id` 正好落到新的 `user_id` 上），所以这一句对旧结构和新结构都成立；
+4. `DROP TABLE snapshot`，再把 `snapshot_v2` 改名回 `snapshot`；
+5. 万一管理员不是 1 号，最后那条 `UPDATE` 会把旧快照改挂到他名下。
+
+**部署顺序很重要：先跑 `schema.sql`，再插入管理员。**
+管理员是库里第一个用户 → `id = 1` → 旧的那行快照（复制过来是 `user_id = 1`）天然就是他的。
+
+### 4.3 执行（这些命令本机跑不起来，要在能跑 wrangler 的机器上做）
 
 ```powershell
-# ① 建本地 D1 表（本地库文件在 .wrangler/state 下，随便造）
+# 本地库
 npx wrangler d1 execute bupt-bettertools-sync --local --file=worker/schema.sql
 
-# ② 起服务（自带静态资源 + /api，一个端口 8787 全都有）
+# 线上库（可以重复执行，跑两次没事）
+npx wrangler d1 execute bupt-bettertools-sync --remote --file=worker/schema.sql
+```
+
+D1 的 `execute` 是**逐条**执行、整份文件不算一个事务。
+所以万一跑到一半断了（网络、超时），直接**再跑一遍**就能接着完成 —— 这正是要求「可重复执行」的原因。
+
+### 4.4 插入管理员
+
+管理员就是你自己的账号，需要先有 `password_hash` / `salt`（PBKDF2，参数见第 3 节）。
+`scripts/_admin-seed.json` 里已经存了一份算好的（用户名 `EpiphanyMio`），插进去即可：
+
+```sql
+INSERT INTO users (username, password_hash, salt, iterations, is_admin, created_at)
+VALUES ('EpiphanyMio', '<64 位 hex>', '<32 位 hex>', 100000, 1, 1760000000000);
+```
+
+要换密码的话，用 `node:crypto` 现场算一份：
+
+```js
+const { pbkdf2Sync, randomBytes } = require('node:crypto')
+const salt = randomBytes(16).toString('hex')
+console.log(salt, pbkdf2Sync('你的密码', Buffer.from(salt, 'hex'), 100000, 32, 'sha256').toString('hex'))
+```
+
+---
+
+## 5. 本地开发与验证
+
+### 5.1 等价验证脚本（本机唯一能跑的那条路）
+
+这台开发机上 `wrangler` / `workerd` / `esbuild` 起不来（spawn EPERM，环境限制），
+所以用一个「真 `node:sqlite` + 真 HTTP + 直接 import `worker/index.ts`」的等价环境来验：
+
+```powershell
+node scripts/_auth-e2e.mjs
+```
+
+它跑的是**真实的 Worker 代码**和**真实的 SQL**（包括 `schema.sql` 的迁移），覆盖：
+
+- 14 条契约断言（未登录 401、登录、错误密码、me、403、发码、错误码注册、真码注册、
+  重复用码、新用户空快照、两边写入互不串、409 乐观锁、大小写重名、登出后失效）；
+- `schema.sql` 的迁移与幂等（旧库、管理员不是 1 号、重复执行）；
+- 边界：405 / 404 / OPTIONS / 256KB / 500 条工具 / 自定义邀请码 / 会话只存哈希 / 响应头。
+
+### 5.2 想跑真 Worker 的时候（换台能跑 wrangler 的机器）
+
+```powershell
+npx wrangler d1 execute bupt-bettertools-sync --local --file=worker/schema.sql
 npx wrangler dev --local --port 8787
 ```
 
-然后浏览器打开 <http://127.0.0.1:8787/> 就是整站（`dist/` 的产物），
-`/api/*` 走 Worker。`.dev.vars` 里的 `SYNC_TOKEN` 会被自动注入。
-
-冒烟测试（PowerShell）：
-
-```powershell
-$h = @{ Authorization = 'Bearer <把 .dev.vars 里那串抄过来>' }
-
-# 空云端：应当 200 且 data 为 null
-Invoke-RestMethod http://127.0.0.1:8787/api/snapshot -Headers $h
-
-# 写一份（baseRevision 0）
-$body = '{"baseRevision":0,"data":{"tools":[],"groups":[],"favorites":[],"order":[],"appSettings":{"defaultCategory":"全部"}}}'
-Invoke-RestMethod http://127.0.0.1:8787/api/snapshot -Method Put -Headers $h -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
-```
-
-> **两种本地跑法，别搞混：**
->
-> ① **只想看后端**：用上面的 `wrangler dev`，浏览器打开 <http://127.0.0.1:8787/>
->    就是整站（`dist/` 的产物，改前端源码不会热更新）。
->
-> ② **要改前端又要调接口**：开两个终端 ——
->    一个 `npx wrangler dev --local --port 8787` 起后端，
->    一个 `pnpm dev` 起 Vite（5173）。`vite.config.ts` 里已经配好了
->    `/api` → `http://127.0.0.1:8787` 的代理，所以前端代码里永远只写 `fetch("/api/...")`，
->    开发和线上是同一行代码。
->    这个代理**只对 `pnpm dev` 有效**：`pnpm build` 出来的静态站点没有代理，
->    线上靠 Worker 同源提供 `/api`。
+`vite.config.ts` 里已经配好 `/api` → `http://127.0.0.1:8787` 的代理，
+所以 `pnpm dev`（5173）拿到的就是真后端 + 热更新。
 
 ---
 
-## 4. 部署（需要人做的那几步）
+## 6. 设计取舍（写给以后维护的自己）
 
-本机没有 Cloudflare 登录态，所以下面这些**必须你自己执行一次**。
-
-```powershell
-# ① 登录（浏览器里点一下授权）
-npx wrangler login
-
-# ② 创建 D1 数据库：输出里会有一行 database_id
-npx wrangler d1 create bupt-bettertools-sync
-
-# ③ 把输出的 database_id 填进 wrangler.jsonc 的 d1_databases[0].database_id
-#    现在那里是占位符 00000000-0000-0000-0000-000000000000，不改会部署失败
-
-# ④ 在线上库里建表（--remote 才是真的线上库）
-npx wrangler d1 execute bupt-bettertools-sync --remote --file=worker/schema.sql
-
-# ⑤ 设置令牌（会提示你粘贴，输入的内容不会出现在命令历史里，也不要写进任何文件）
-npx wrangler secret put SYNC_TOKEN
-
-# ⑥ 部署
-npx wrangler deploy
-```
-
-`git push` 也会触发 Cloudflare 自动构建（构建命令 `pnpm build`，产物 `dist/`）。
-但只要 `database_id` 还是占位符，自动构建就会在 `wrangler deploy` 那步失败，
-所以 ③ 必须在 push 之前做完。
-
-部署后自检：
-
-```powershell
-# 应当 401（没带令牌）
-Invoke-WebRequest https://bupt-bettertools.yuesu76.workers.dev/api/snapshot
-# 应当 200 且 data 为 null（第一次）
-Invoke-RestMethod https://bupt-bettertools.yuesu76.workers.dev/api/snapshot -Headers @{ Authorization = 'Bearer <线上令牌>' }
-```
-
-最后在网页的「开发者设置 → 云端同步」里填**同一个令牌**，电脑和手机各填一次即可。
-
----
-
-## 5. 设计取舍（写给以后维护的自己）
-
-- **为什么整包推拉，不拆表**：全部数据十几 KB、单用户。拆表就要处理
-  「两台设备各改一条」的字段级合并，而合并规则写错是**静默**的 —— 数据被揉在一起，
-  用户不知道从哪一步开始错的。单行快照把冲突简化成一个数字比较，行为可预测。
-- **乐观锁为什么放在 SQL 的 WHERE 里**：`UPDATE ... WHERE id = 1 AND revision = ?`
+- **为什么令牌只存 sha256**：整张 `sessions` 表被拖走时，攻击者拿到的只是一堆哈希，
+  拼不出能用的令牌。代价是每次鉴权多算一次 sha256 —— 在 Workers 上是微秒级。
+- **为什么「先查重名，再占邀请码」**：如果把占码放在前面，一个已经被占用的用户名会让
+  用户白白烧掉一张码。反过来的顺序里，最坏情况只是多一次 `SELECT`。
+- **邀请码为什么是两段式占用（先写 `used_at`、建完用户再补 `used_by`）**：
+  占码必须是**一步原子操作**（`UPDATE ... WHERE used_by IS NULL` 看 `changes`），
+  否则两个请求同时用同一个码能双开。而 `used_by` 需要先有用户 id，所以中间必须留一个状态。
+  这个状态带 2 分钟租约：万一进程在中间挂了，码到期自动恢复可用，不会锁死。
+  对外（`GET /api/invites`）这个中间态看起来和「没用过」一样。
+- **为什么查无此人也要算一次哈希**：否则这条路径比「密码错」快几十毫秒，
+  响应时间本身就把「这个用户名存在」泄露了，401 只回一个错误码的努力也就白费。
+- **为什么 401 和 403 分开**：401 = 你还没登录（前端跳登录页），
+  403 = 登录了但不是管理员（前端提示没权限）。合成一个会让前端只能猜。
+- **为什么快照还是一整包**：一人十几 KB，拆表就要处理字段级合并，而合并规则写错是**静默**的。
+  单行快照把冲突简化成一个数字比较：`revision` 对不上就 409。
+- **乐观锁为什么放在 SQL 的 WHERE 里**：`UPDATE ... WHERE user_id = ? AND revision = ?`
   让「判断」和「写入」由数据库一句完成，中间没有空档；先 SELECT 再 UPDATE 是挡不住并发的。
-- **为什么先鉴权再读 body**：没令牌的请求不该消耗解析 256KB 的 CPU；
-  而且错误令牌的请求会先被 401 挡掉，不会因为我们后面的校验逻辑多花时间。
-- **令牌为什么用定长时间比较**：`a === b` 在第一个不同字符处就返回，
-  响应耗时的差别能被用来一位一位试出令牌。`sameToken()` 把所有位置都比完才出结果。
-- **失败即拒绝**：没配 `SYNC_TOKEN` 时一律 401。配置漏了顶多同步用不了，
-  绝不能变成「谁都能读写我的数据」。
+- **为什么先鉴权再读 body**：没身份的请求不该消耗解析 256KB 的 CPU 和内存。
+- **迁移为什么用 `SELECT *`**：两张表列数、顺序都对齐，同一句 SQL 才能对旧结构和新结构都成立 ——
+  这是让脚本「可以重复执行」的关键，纯 SQL 里没有别的办法做条件 DDL。
 
 ---
 
-## 6. 已知的坑
+## 7. 已知的坑
 
-1. **`database_id` 是占位符**：不换成真值，`wrangler deploy` 与自动构建都会失败。
-   `--local` 的本地开发不受影响。
-2. **令牌是唯一的一道门**：这套接口没有账号体系，谁拿到令牌就能读写全部数据。
-   请用 32 位以上的随机串（`npx wrangler secret put` 输入，别写进 `wrangler.jsonc` 的 `vars`——
-   那样会明文进仓库）。
-3. **本地两套令牌**：`.dev.vars`（本地，已被 gitignore）和线上 secret 互不相干，
-   线上测的时候别拿本地的串去试。
-4. **`/api` 不能被缓存**：响应已经带了 `Cache-Control: no-store`。
-   以后如果在 Cloudflare 面板加缓存规则，务必把 `/api/*` 排除掉 ——
-   一个被缓存的 GET /api/snapshot 会让客户端读到旧 revision，然后每次推送都撞 409。
-5. **上限写了两份**：前端 `src/lib/sync.ts` 里的 `MAX_TOOLS` / `MAX_PAYLOAD_BYTES`
-   和这里 `worker/index.ts` 的两个常量要一起改。前端那份是为了少跑一趟，后端这份才是真正的门。
-6. **单用户前提下才成立**：现在「云端胜」的策略对一个人多台设备是合理的，
-   一旦要多用户，`snapshot` 表就得加 `user_id` 并换成按用户分行的设计。
-7. **D1 是单主库**：写入天然串行，所以乐观锁在 D1 上是严格成立的。
-   将来如果启用 read replication 并让写入走副本，这条前提要重新确认。
-8. **`single-page-application` 回落和 `/api` 的先后顺序，部署后必须验一次**：
-   现在的路由规则是「先找静态资源，找不到才进 Worker」，所以 `/api/*` 会进 Worker，
-   Worker 再把非 `/api` 的请求交回 `env.ASSETS`（那时才轮到 SPA 回落成 index.html）。
-   但这依赖平台行为，上线后请确认一次：
-
-   ```powershell
-   curl.exe -i https://<你的域名>/api/snapshot
-   ```
-
-   期望是 `401` + `{"error":"unauthorized"}` 的 **JSON**。
-   如果返回的是 `index.html`（HTML），说明 SPA 回落抢在了 Worker 前面 ——
-   这时要在 `wrangler.jsonc` 的 `assets` 里补一行 `"run_worker_first": ["/api/*"]`，
-   让它强制把 `/api/*` 交给 Worker。
+1. **`SYNC_TOKEN` 已经没用了**：线上那个 secret 可以删，但删不删都不影响鉴权。
+   任何新逻辑都不该再挂到它上面。
+2. **管理员必须是第一个用户（`id = 1`）**，这样 v1 的旧快照迁移完就自动挂在他名下。
+   如果不是，重跑一次 `schema.sql` 会把它改挂过去（前提是 1 号用户不存在）。
+3. **D1 单主库**：写入天然串行，所以「占码」和「乐观锁」两条并发假设在 D1 上是严格成立的。
+   将来若启用 read replication 并让写入走副本，这两条前提要重新确认。
+4. **`/api` 不能被缓存**：响应已经带 `cache-control: no-store`。
+   以后如果在 Cloudflare 面板加缓存规则，务必把 `/api/*` 排除掉。
+5. **上限写了两份**：`src/lib/sync.ts` 的 `MAX_TOOLS` / `MAX_PAYLOAD_BYTES` 和
+   `worker/index.ts` 的两个常量要一起改。前端那份是为了少跑一趟，后端这份才是真正的门。
+6. **`single-page-application` 回落和 `/api` 的先后**：`wrangler.jsonc` 里已经有
+   `"run_worker_first": ["/api/*"]`，上线后还是要确认一次：
+   `curl -i https://<域名>/api/snapshot` 应当返回 `401` + **JSON**，不是 `index.html`。
+7. **密码无法找回**：这套系统没有邮箱、没有重置流程。忘了密码只能直接改库
+   （用第 4.4 节的办法生成新的 `password_hash`/`salt` 再 `UPDATE`）。
+8. **邀请码占用的最后一步可能失败**：用户已经建好、但最后那条补 `used_by` 的 `UPDATE` 失败时，
+   这张码会在 2 分钟租约到期后重新可用（理论上能被第二个请求用掉）。
+   这是「D1 没有交互式事务」换来的代价 —— 反过来（让码永久锁死）更糟，所以选了这个方向。
+9. **没有登录失败限流**：PBKDF2 让每次尝试都慢，但真正的限流要靠 Cloudflare 的 WAF / Rate Limiting
+   规则（或在 `users` 上加失败计数）。要做的话，注意别在 Worker 里引入额外的写操作 —— 那是计费的。

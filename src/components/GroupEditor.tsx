@@ -225,7 +225,7 @@ export default function GroupEditor({
                   只清空你在本机做过的全部修改，还原成默认清单。
                 </p>
                 <p className="mt-1 text-xs text-fg-subtle">
-                  提示：所有修改都保存在这台设备的浏览器里，不会上传到服务器。
+                  提示：修改会先保存在本机，随后同步到你的账号云端（文件管理里的文件不上传）。
                 </p>
               </div>
             </>

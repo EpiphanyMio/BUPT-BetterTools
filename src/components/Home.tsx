@@ -143,10 +143,11 @@ export default function Home({ onOpen, onSearch }: HomeProps) {
 
         <p className="mt-12 text-center text-xs text-fg-subtle">
           {/* 页脚说明分两件事讲清楚：
-              ① 网站本身在哪 —— 现在是部署在公网上的静态文件；
-              ② 你的数据在哪 —— 始终只在这台设备的浏览器里，不上传。
-              上线前写的是"没有上传到服务器"，上线后容易读成"网站不在服务器上"，所以改掉了。 */}
-          网站托管在 bupt-bettertools.yuesu76.workers.dev · 工具和文件只存在这台设备的浏览器里，不会上传
+              ① 网站本身在哪 —— 部署在公网上的静态文件；
+              ② 你的数据在哪 —— 登录后工具/分组/收藏/排序会同步到自己的账号云端；
+                 只有文件管理里的文件始终留在本机（浏览器存储，不上传）。
+              加了账号体系之后这句必须改：原来写"不会上传"已经不符合事实了。 */}
+          网站托管在 bupt-bettertools.yuesu76.workers.dev · 登录后工具和收藏会同步到你的账号 · 文件只存在这台设备
         </p>
       </div>
     </div>

@@ -5,7 +5,9 @@
 //
 // 新增参数：在下面的 FIELDS 数组里加一行描述，界面上就会自动出现对应控件。
 
+import { useAuth } from '../hooks/useAuth'
 import type { DevSettingKey, DevSettings } from '../hooks/useDevSettings'
+import InviteAdmin from './InviteAdmin'
 
 // 参数界面的描述。key 必须和 DEFAULT_DEV_SETTINGS 里的字段名一致。
 type FieldSpec =
@@ -67,6 +69,10 @@ export default function DevSettingsContent({
   onChange,
   onReset,
 }: DevSettingsContentProps) {
+  // 管理员判断只认服务器给的 isAdmin（见 src/lib/auth.ts）：
+  // 邀请码区块对普通用户连渲染都不该发生。
+  const { isAdmin } = useAuth()
+
   // 清空本工具在浏览器里保存的全部数据（调试时经常要用）
   function handleClearStorage() {
     const keys = Object.keys(localStorage).filter((key) =>
@@ -166,6 +172,11 @@ export default function DevSettingsContent({
           清空本地数据
         </button>
       </div>
+
+      {/* ---- 邀请码（仅管理员）----
+          非管理员这里什么都不渲染 —— 不是 disabled，而是 DOM 里根本没有这一块。
+          一个看得见却点不动的按钮只会让人困惑，而真正拦住非管理员的是服务端的 403。 */}
+      {isAdmin && <InviteAdmin />}
     </>
   )
 }

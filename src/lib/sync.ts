@@ -1,5 +1,15 @@
 // 「云端同步」客户端：把本地数据同步到 /api/snapshot（后端由另一位同事实现）。
 //
+// ---------------------------------------------------------------- 鉴权：跟着账号会话走
+//
+// 以前每个请求带的是"共享令牌"（Cloudflare 上的 SYNC_TOKEN 环境变量）——
+// 谁拿到那串字符，就能读写这个站的全部数据。
+// 现在带的是**登录后拿到的会话令牌**（Authorization: Bearer <token>），
+// 服务端据此找出它对应的那份快照：不同账号各存一份，互相看不见。
+//
+// 令牌本身不归这个文件管：读写都在 src/lib/auth.ts，这里只调 getSessionToken()。
+// 没有令牌（没登录）时状态机停在 unauthenticated，一个请求都不发。
+//
 // ---------------------------------------------------------------- 策略：版本号 + 谁新听谁
 //
 // 云端只存**一整份**数据，每写一次 revision 加 1。每台设备记住"我上次看到的是第几版"：
@@ -30,9 +40,11 @@
 //   1. setSyncSource(() => 当前本地数据)   —— 告诉它"要上传的是什么"
 //   2. setSnapshotApplier((data) => 写回本地) —— 告诉它"拉下来的数据往哪放"
 //   3. 本地数据每次变化后调 requestSync()（防抖 1500ms 自动推）
-//   4. 页面加载时调一次 syncNow()（先拉，再决定要不要推）
+//   4. 登录成功后调一次 syncNow()（先把云端那份拉下来，再决定要不要推）
+//   5. 登录状态切换时调一次 resetSyncState()（把内存里的版本号对齐本地存储）
 
 import { ALL } from './constants'
+import { getSessionToken } from './auth'
 import type { SyncData, SyncSnapshot, SyncState, SyncStatus, Tool } from '../types'
 
 // 类型也从这里再导出一遍，接线的同事只 import 这一个模块就够了
@@ -40,7 +52,8 @@ export type { SyncData, SyncSnapshot, SyncState, SyncStatus } from '../types'
 
 // ---------------------------------------------------------------- 常量
 
-const TOKEN_KEY = 'better-tools:sync-token'
+// 注意：旧版的 'better-tools:sync-token'（共享令牌）已经不用了，
+// 它的清理放在 src/lib/auth.ts 的 clearLocalAccountData() 里 —— 只留这一处清理入口。
 const REVISION_KEY = 'better-tools:sync-revision'
 
 // "本地有改动还没推上去"的标记。
@@ -59,12 +72,6 @@ const MAX_TOOLS = 500
 const MAX_PAYLOAD_BYTES = 256 * 1024
 
 // ---------------------------------------------------------------- 模块级状态
-//
-// 顺序有讲究：state 的初始值要用 getToken()，所以 tokenFallback 必须声明在它前面
-// （let/const 有"暂时性死区"，声明前访问会直接抛错）。
-
-// localStorage 用不了时（隐私模式会抛错）的兜底，至少本次打开还能用这个令牌
-let tokenFallback = ''
 
 // 有改动还没推上去。初值来自上次会话留下的标记。
 let dirty = readDirtyFlag()
@@ -74,7 +81,8 @@ const listeners = new Set<() => void>()
 
 // 缓存的状态对象。⚠️ 只在真的变化时才换成新对象（见 patchState）
 let state: SyncState = {
-  status: getToken() ? 'idle' : 'unconfigured',
+  // 有会话令牌才可能"待同步"；没登录就停在 unauthenticated，一个请求都不发
+  status: getSessionToken() ? 'idle' : 'unauthenticated',
   revision: readStoredRevision(),
   updatedAt: 0,
   lastError: '',
@@ -167,45 +175,23 @@ export function getSyncState(): SyncState {
   return state
 }
 
-// ---------------------------------------------------------------- 令牌
+// ---------------------------------------------------------------- 会话身份
 
-/** 读同步令牌。没有就返回空字符串。 */
-export function getToken(): string {
-  if (tokenFallback) return tokenFallback
-  try {
-    return (localStorage.getItem(TOKEN_KEY) ?? '').trim()
-  } catch {
-    return ''
-  }
+/** 现在有没有登录（浏览器里存着会话令牌）。没登录就完全不联网。 */
+function hasSession(): boolean {
+  return getSessionToken().length > 0
 }
 
-/** 填 / 清空令牌。传空字符串表示关闭同步。 */
-export function setToken(t: string): void {
-  const clean = t.trim()
-
-  // 先记在内存里再试着持久化：隐私模式下 localStorage 会抛错，
-  // 但本次打开的页面仍然能用这个令牌，不至于当场失灵。
-  tokenFallback = clean
-  try {
-    if (clean) localStorage.setItem(TOKEN_KEY, clean)
-    else localStorage.removeItem(TOKEN_KEY)
-  } catch {
-    // 刷新后需要重新填一次，可以接受
-  }
-
-  // 令牌变了，状态机也要跟着变
-  if (!clean) {
-    clearTimer()
-    queuedPush = false
-    patchState({ status: 'unconfigured', lastError: '' })
-    return
-  }
-  if (state.status === 'unconfigured') patchState({ status: 'idle', lastError: '' })
-}
-
-/** 填过令牌没有。没填就完全不联网。 */
-export function isConfigured(): boolean {
-  return getToken().length > 0
+/**
+ * 【兼容旧接口】以前界面用这个函数填 / 清共享令牌，现在鉴权改成了账号会话
+ * （src/lib/auth.ts）。令牌由那边保存，这里不再碰。
+ *
+ * 为什么还留着这个空函数：src/hooks/useSync.ts 仍然从本模块 import 它，
+ * 而那个文件不在这次改动范围内。它现在已经不影响任何行为 ——
+ * 登录 / 退出全部走 auth.ts。等 useSync 里那行 import 能删掉时，它就可以一起删。
+ */
+export function setToken(_token: string): void {
+  // 故意留空：会话令牌不归这个文件管
 }
 
 // ---------------------------------------------------------------- HTTP 层
@@ -239,7 +225,9 @@ export class SyncConflictError extends Error {
 }
 
 function authHeaders(): Record<string, string> {
-  const token = getToken()
+  // 会话令牌由 src/lib/auth.ts 保管；这里只负责把它放进 Authorization 头。
+  // 服务端靠它认出"这是谁"，从而只返回这个人自己那份快照。
+  const token = getSessionToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
@@ -254,7 +242,7 @@ async function toHttpError(res: Response): Promise<SyncHttpError> {
   try {
     const body = (await res.json()) as { error?: unknown; message?: unknown }
     if (typeof body?.message === 'string' && body.message) message = body.message
-    else if (body?.error === 'unauthorized') message = '令牌无效或已过期，请重新填写'
+    else if (body?.error === 'unauthorized') message = '登录已失效，请重新登录'
     else if (typeof body?.error === 'string') message = body.error
   } catch {
     // 响应体不是 JSON（比如开发时后端没起来、返回了 index.html），
@@ -487,7 +475,7 @@ function checkPayload(data: SyncData): string {
 /** 把各种异常翻译成"状态 + 一句人话"，界面直接显示。 */
 function describeError(err: unknown): { status: SyncStatus; message: string } {
   if (err instanceof SyncHttpError) {
-    if (err.status === 401) return { status: 'error', message: '令牌无效或已过期，请在设置里重新填写' }
+    if (err.status === 401) return { status: 'error', message: '登录已失效，请在设置里退出后重新登录' }
     if (err.status === 400) return { status: 'error', message: err.message || '云端拒收：数据格式不对' }
     if (err.status >= 500) return { status: 'error', message: `服务器出错了（${err.status}），稍后会自动重试` }
     return { status: 'error', message: err.message }
@@ -517,8 +505,8 @@ function failWith(err: unknown): void {
  * 默认拿 state.revision 当 baseRevision —— 也就是"我上次见到的云端版本"。
  */
 async function pushLocal(baseRevision: number = state.revision): Promise<void> {
-  if (!isConfigured()) {
-    patchState({ status: 'unconfigured' })
+  if (!hasSession()) {
+    patchState({ status: 'unauthenticated' })
     return
   }
 
@@ -580,17 +568,42 @@ async function pushLocal(baseRevision: number = state.revision): Promise<void> {
 // ---------------------------------------------------------------- 对外动作
 
 /**
+ * 把内存里的同步状态对齐到当前浏览器存储。
+ *
+ * 什么时候要调：登录状态切换的时候（退出后换个人登录、令牌失效后重新登录）。
+ * 内存里的 revision 是**上一个人**留下的 —— 拿它去和下一个人的云端比大小，
+ * 会把"云端更新"误判成"本地更新"，于是用一份本地数据把人家的云端覆盖掉。
+ * 这种事故是静默的，所以宁可每次切换都重新对一遍。
+ */
+export function resetSyncState(): void {
+  clearTimer()
+  queuedPush = false
+  markDirty(false)
+  patchState({
+    status: getSessionToken() ? 'idle' : 'unauthenticated',
+    revision: readStoredRevision(),
+    updatedAt: 0,
+    lastError: '',
+    lastSyncedAt: 0,
+  })
+}
+
+/**
  * "本地刚改过"的信号：防抖 1.5 秒后自动推。
  *
  * 主程序在每次数据变化后调它即可，不用关心当前是第几版、有没有在推送 ——
  * 那些判断都在 pushLocal 里。
  */
 export function requestSync(): void {
-  // 不管配没配令牌，都先记下"本地变了"：
-  // 没配令牌时用户照样在改数据，等他之后填上令牌，这次的改动要能补推上去。
-  markDirty(true)
+  // 没登录时连"待推"都不记：这份数据还不属于任何账号，
+  // 等登录后由 syncNow 决定（云端是空的就把本地推上去，云端有就拉下来）。
+  // 记了脏标记反而危险：下一个人登录时，它会把这轮同步判成"本地要推、云端要丢弃"。
+  if (!hasSession()) {
+    patchState({ status: 'unauthenticated' })
+    return
+  }
 
-  if (!isConfigured()) return
+  markDirty(true)
 
   // 连续改动只推最后一次：每来一次就重置计时器，等用户真的停下来再发请求。
   clearTimer()
@@ -603,12 +616,13 @@ export function requestSync(): void {
 /**
  * 立即同步一次：先拉，再按需推。
  *
- * 这是"启动同步"和"用户点同步按钮"都该调的那个函数。
+ * 这是"登录成功后"和"用户点同步按钮"都该调的那个函数。
  * 它永远不会抛错 —— 出什么事都只体现在 getSyncState().status / lastError 上。
  */
 export async function syncNow(): Promise<void> {
-  if (!isConfigured()) {
-    patchState({ status: 'unconfigured' })
+  // 没登录就完全不发请求：连 401 都不该去领，状态停在 unauthenticated 最诚实
+  if (!hasSession()) {
+    patchState({ status: 'unauthenticated' })
     return
   }
 
@@ -658,11 +672,12 @@ export async function syncNow(): Promise<void> {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('offline', () => {
-    if (isConfigured()) patchState({ status: 'offline', lastError: '设备已断网，改动会先留在本地' })
+    if (hasSession()) patchState({ status: 'offline', lastError: '设备已断网，改动会先留在本地' })
   })
 
   window.addEventListener('online', () => {
-    if (!isConfigured()) return
+    // 没登录时连"恢复网络"也不用管：登录界面自己会让用户重新提交
+    if (!hasSession()) return
     if (dirty || state.status === 'offline') void syncNow()
   })
 }
