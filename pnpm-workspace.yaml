@@ -1,0 +1,13 @@
+# pnpm 的设置写在这里（pnpm 10 起官方推荐这么做）。
+#
+# 为什么不写在 .npmrc：.npmrc 是 npm 和 pnpm **共用**的配置文件，
+# 而下面这几项是 pnpm 专有的。npm 读到不认识的键会报警告
+# （npm 12 起会直接报错），所以把它们挪到这个 npm 根本不读的文件里。
+#
+# 键名用驼峰（storeDir），和 .npmrc 里的短横线写法（store-dir）不同。
+
+# 依赖仓库与元数据缓存都放在项目内，避免写系统目录
+storeDir: .pnpm-store
+cacheDir: .pnpm-cache
+# 扁平布局（和 npm 一样），避免符号链接在 Windows 上的解析问题
+nodeLinker: hoisted
