@@ -18,6 +18,14 @@ export const EDITOR_TOOL_PREFIX = 'editor:' // 编辑弹窗里的工具行
 // 从而把新增的工具自动补进去（见 useTools 里的自动补充逻辑）。
 export const SEED_VERSION = 2
 
+// 「某处直接改了浏览器本地数据」的广播事件名。
+//
+// 为什么需要它：各个 Hook 只在挂载时从 localStorage 读一次（useState 的初始值只算一次）。
+// 云端同步把远端数据写回 localStorage 之后，界面不会自己刷新 ——
+// 所以要主动广播一声，让挂在监听上的 Hook 重新读一遍。
+// 用 window 事件而不是引入状态库：这里只需要"通知一下"，不值得为它加依赖。
+export const DATA_CHANGED_EVENT = 'better-tools:data-changed'
+
 export const tabId = (category: string) => TAB_PREFIX + category
 export const groupId = (group: string) => GROUP_PREFIX + group
 export const editorToolId = (toolId: string) => EDITOR_TOOL_PREFIX + toolId

@@ -13,6 +13,7 @@ import type { AppSettings } from '../hooks/useAppSettings'
 import type { DevSettingKey, DevSettings } from '../hooks/useDevSettings'
 import { THEME_OPTIONS, useTheme } from '../hooks/useTheme'
 import DevSettingsContent from './DevSettingsContent'
+import SyncSettings from './SyncSettings'
 
 interface GeneralSettingsPanelProps {
   open: boolean
@@ -206,6 +207,11 @@ export default function GeneralSettingsPanel({
                 </span>
                 <span className="shrink-0 text-lg text-fg-subtle">›</span>
               </button>
+
+              <h3 className="mb-3 mt-7 text-xs font-medium tracking-wide text-fg-subtle">
+                云端同步
+              </h3>
+              <SyncSettings />
             </>
           )}
         </div>

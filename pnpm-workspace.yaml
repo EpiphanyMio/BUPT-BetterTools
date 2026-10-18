@@ -11,3 +11,11 @@ storeDir: .pnpm-store
 cacheDir: .pnpm-cache
 # 扁平布局（和 npm 一样），避免符号链接在 Windows 上的解析问题
 nodeLinker: hoisted
+
+# 允许执行哪些依赖的安装脚本（pnpm 默认全部拦截，会给出下面这种占位行）。
+# workerd 是 Cloudflare Workers 的本地运行时，esbuild 是 wrangler 的打包器，
+# 两者都要靠安装脚本下载/链接原生二进制 —— 不放行的话 `wrangler dev` 起不来，
+# `pnpm build` 也可能因为 esbuild 缺二进制而失败。
+allowBuilds:
+  esbuild: true
+  workerd: true

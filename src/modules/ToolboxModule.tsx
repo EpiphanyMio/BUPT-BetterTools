@@ -8,7 +8,7 @@
 //   ② 把卡片拖到上方的分组标签上 → 移进那个分组
 //   ③ 拖动分组标签本身 → 调整分组的排列顺序
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   KeyboardSensor,
@@ -27,6 +27,8 @@ import {
   sortableKeyboardCoordinates,
 } from '@dnd-kit/sortable'
 import { ALL, TAB_PREFIX } from '../lib/constants'
+import { requestSync } from '../lib/sync'
+import { getRemoteApplySeq } from '../lib/syncData'
 import { buildAutoScroll } from '../lib/autoScroll'
 import { useFavorites } from '../hooks/useFavorites'
 import { useToolOrder } from '../hooks/useToolOrder'
@@ -98,6 +100,27 @@ export default function ToolboxModule({ onBack, onSearch }: ToolboxModuleProps) 
   // ---- 顺序：拖动调整后存到浏览器本地 ----
   const allIds = useMemo(() => tools.map((tool) => tool.id), [tools])
   const { order, setOrder } = useToolOrder(allIds)
+
+  // 数据一改就请求上传（sync.ts 内部会把 1.5 秒内的连续改动合并成一次）。
+  //
+  // 为什么用 useRef 跳过首次渲染：刚打开页面时上面这几个值都是"刚从本地读出来的"，
+  // 和云端大概率一模一样，白推一次纯属浪费请求；更要紧的是会多写一次 revision。
+  const syncArmed = useRef(false)
+  // 记住上次看到的"云端写回"计数器 —— 它不是这个组件能感知的普通 state，所以放 ref
+  const lastRemoteSeq = useRef(getRemoteApplySeq())
+  useEffect(() => {
+    if (!syncArmed.current) {
+      syncArmed.current = true
+      return
+    }
+    // 这次变化是云端同步写回来的 → 不能再推上去，否则两台设备会互相把版本号 +1
+    const seq = getRemoteApplySeq()
+    if (seq !== lastRemoteSeq.current) {
+      lastRemoteSeq.current = seq
+      return
+    }
+    requestSync()
+  }, [tools, groups, favorites, order, appSettings])
 
   // 分组列表 = "全部" + 用户自己定义的分组
   const categories = useMemo(() => [ALL, ...groups], [groups])

@@ -15,6 +15,8 @@ import ToolboxModule from './modules/ToolboxModule'
 import FilesModule from './modules/FilesModule'
 import GlobalSearch from './components/GlobalSearch'
 import { syncSeedTools } from './hooks/useTools'
+import { setSnapshotApplier, setSyncSource, syncNow } from './lib/sync'
+import { readSyncData, writeSyncData } from './lib/syncData'
 import type { FileJumpRequest } from './types'
 
 // 应用启动时先做一次「默认清单同步」：把 tools.json 里新增的工具补进浏览器本地数据。
@@ -32,6 +34,22 @@ export default function App() {
 
   // 最近一次"跳到某个文件夹"的请求，null 表示没有
   const [fileJump, setFileJump] = useState<FileJumpRequest | null>(null)
+
+  // ---- 云端同步 ----------------
+  // 这里只做两件事：告诉同步引擎"数据从哪读"(readSyncData) 和"往哪写回"(writeSyncData)，
+  // 然后在启动时拉一次。**同步失败不能影响网站可用** —— syncNow 内部全 catch，永不抛错。
+  //
+  // 为什么放在 App 而不是某个模块里：同步是全局的，用户可能停在首页不进入工具箱，
+  // 但"另一台设备改了数据"这件事仍然应该在他进来时被拉下来。
+  useEffect(() => {
+    setSyncSource(readSyncData)
+    setSnapshotApplier(writeSyncData)
+    void syncNow()
+    return () => {
+      setSyncSource(null)
+      setSnapshotApplier(null)
+    }
+  }, [])
 
   const goHome = () => setActive(null)
 

@@ -9,6 +9,91 @@
 
 ---
 
+## 2026-10-18 22:46 · 多端数据同步：Cloudflare Worker + D1 后端 + 前端同步引擎
+
+手机和电脑现在可以共用同一份数据了。在「通用设置 → 云端同步」里填一次令牌，
+之后工具增删改、分组、收藏、排序、默认分组都会自动同步，另一台设备打开就能看到。
+
+### 为什么必须要有后端
+
+浏览器的安全模型就是不让一个站点的 localStorage 流向另一台设备。要跨设备共享，
+必须有一个双方都能访问的中间人 —— 那就是后端。没有"纯前端"的做法。
+
+### 三个关键设计
+
+**① 整包快照，不做字段级合并。** 云端 D1 里只有一张表、一行数据（`snapshot` 的 id 永远是 1）。
+全部数据才十几 KB、又是单用户；拆表就要处理"两台设备各改一条"的合并规则，
+而合并规则写错是**静默**的 —— 数据被揉在一起，用户不知道从哪一步开始错的。
+单行快照把冲突简化成一个数字比较，行为可预测。
+
+**② 乐观锁：版本号塞进 WHERE，而不是"先查再改"。**
+
+```sql
+UPDATE snapshot SET revision = revision + 1, ... WHERE id = 1 AND revision = ?baseRevision
+```
+
+别人先写过 → 这行匹配不到 → `changes === 0` → 回 409 并带回当前快照。
+为什么不能先 SELECT 再 UPDATE：查完到改之间别的请求可能已经写进去了，
+那个空档就是数据被覆盖的地方。判断和写入由数据库一句完成，中间没有缝。
+
+**③ 离线优先：同步是加分项，不是运行前提。**
+
+点收藏 → 立刻写 localStorage（界面马上响应）→ 后台防抖 1.5 秒再推。
+网络断了、服务器挂了，网站照常完整可用；恢复网络后自动补一次。
+
+### 鉴权与安全
+
+- 一个人用的服务，不做注册登录：一个长随机串当令牌，只走 `wrangler secret put`
+- **先鉴权再解析 body**：没令牌的请求连 256KB 都不该让我们解析（Worker 按调用计费）
+- 令牌用**定长时间比较**：直接 `a === b` 会在第一个不同字符处提前返回，
+  攻击者能从响应耗时差里一位一位试出令牌
+
+### 两个容易踩的坑
+
+**① SPA 回落会抢在 Worker 前面。** `assets` 里配了"找不到文件就回落 index.html"，
+这条规则会把 `/api/snapshot` 也吃掉，浏览器拿到一整页 HTML，前端 `res.json()` 只抛一句看不懂的语法错误。
+修法是在 assets 里加 `"run_worker_first": ["/api/*"]`，让接口路径先交给 Worker。
+（本地测试走 Vite 代理、不经过静态资源层，所以这个问题只有真正部署才会暴露。）
+
+**② 这台机器上 `wrangler dev` / `d1 execute` 起不来。** workerd 建不了自己的临时目录
+（`kj/filesystem CreateDirectory: 拒绝访问`），是环境限制不是代码问题 ——
+`wrangler deploy --dry-run` 能正常打包（读 116 个资源文件、识别 D1 绑定）。
+所以验证改用 `scripts/_sync-e2e.mjs`：真 HTTP + 真 `node:sqlite` + 直接 import 真实的 `worker/index.ts`
+（`scripts/_*` 已 gitignore，不进仓库）。
+
+### 验证
+
+- **接口层 12 项断言全过**：401 / 空云端 / 首次写入 / 数据一致 / 409 冲突 / 过期版本写入 /
+  形状非法 / 超 500 条 / 未知路径 404 / OPTIONS 204 / 方法不支持 405
+- **浏览器端到端 6 项全过**：填令牌 → 状态变「已同步」→ 33 个工具推上云端 → 收藏后自动上传 →
+  **清空本地模拟换设备 → 数据从云端恢复，界面也真的变回「已收藏」**
+- `pnpm build` exit 0（52 个模块）
+
+### 已经真正部署上线
+
+- D1 库 `bupt-bettertools-sync`（`0fc7584c-…`），表已建
+- `SYNC_TOKEN` 已设进 Cloudflare secret（48 位十六进制；**只写在 `scripts/_sync-token.txt`，已 gitignore**）
+- Worker 已部署：<https://bupt-bettertools.yuesu76.workers.dev/>
+- 线上实测：不带令牌 → 401；带令牌 → 200 且 `data: null`；`content-type: application/json`
+  （证明 `run_worker_first` 生效，`/api/*` 没被 index.html 顶掉）
+
+**上线时踩到的两个坑**：
+
+1. 有个并行对话往 `wrangler.jsonc` 里加**第二个 D1 绑定**（`binding: bupt_bettertools_sync`），
+   而原来那个 `DB` 还是占位 id —— 多绑了个没人用的库，部署照样失败。已整理成单绑定。
+2. 第一次生成令牌用了 `[RandomNumberGenerator]::GetBytes` + `[Convert]::ToHexString`，
+   这个 PowerShell 里**两个方法都不存在**，`$token` 是空串 → secret 被设成空值 →
+   Worker 是 fail-closed 的，于是所有请求 401。改用 `node -e "crypto.randomBytes"` 重新生成并覆盖。
+
+### 跨设备实测（线上站点，两个全新浏览器配置）
+
+- 设备 A（桌面尺寸）：填令牌 → 已同步 → 33 个工具上云（revision 1）→ 收藏「GitHub」→ 自动上传（revision 2）
+- 设备 B（手机尺寸、全新配置、初始无收藏）：填令牌 → **收藏自动写回本地，界面里 GitHub 真的显示「已收藏」**
+
+*涉及文件：`worker/index.ts`（新增）、`worker/schema.sql`（新增）、`worker/README.md`（新增）、`wrangler.jsonc`、`src/lib/sync.ts`（新增）、`src/lib/syncData.ts`（新增）、`src/hooks/useSync.ts`（新增）、`src/components/SyncSettings.tsx`（新增）、`src/types.ts`、`src/App.tsx`、`src/hooks/useTools.ts`、`src/hooks/useFavorites.ts`、`src/hooks/useToolOrder.ts`、`src/hooks/useAppSettings.ts`、`src/lib/constants.ts`、`src/modules/ToolboxModule.tsx`、`src/components/GeneralSettingsPanel.tsx`、`vite.config.ts`、`package.json`、`pnpm-workspace.yaml`、`.gitignore`*
+
+---
+
 ## 2026-10-18 22:00 · 修复手机端标题与按钮的排版冲突
 
 手机上进入「常用工具」后，标题「🔗 常用工具」被压成一条竖线，右边那排按钮还撑出了屏幕。

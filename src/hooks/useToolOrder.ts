@@ -2,13 +2,15 @@
 // 和收藏一样，刷新页面、关掉再打开，顺序都还记得。
 
 import { useEffect, useState } from 'react'
+import { DATA_CHANGED_EVENT } from '../lib/constants'
 
-const STORAGE_KEY = 'better-tools:order'
+// 键名导出给 src/lib/syncData.ts 用（云端同步要按同样的键写回）
+export const ORDER_KEY = 'better-tools:order'
 
 export function useToolOrder(allIds: string[]) {
   const [order, setOrder] = useState<string[]>(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
+      const raw = localStorage.getItem(ORDER_KEY)
       const saved = raw ? (JSON.parse(raw) as string[]) : []
       // 只保留"现在还存在"的工具；新加进来的工具补到末尾
       const valid = saved.filter((id) => allIds.includes(id))
@@ -32,8 +34,26 @@ export function useToolOrder(allIds: string[]) {
   }, [allIds])
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(order))
+    localStorage.setItem(ORDER_KEY, JSON.stringify(order))
   }, [order])
+
+  // 别处改了 localStorage（云端同步写回）时重新读。
+  // 依赖里带上 allIds：读到的顺序要按"当前实际存在的工具"重新对齐一次。
+  useEffect(() => {
+    function reload() {
+      try {
+        const raw = localStorage.getItem(ORDER_KEY)
+        const saved = raw ? (JSON.parse(raw) as string[]) : []
+        const valid = saved.filter((id) => allIds.includes(id))
+        const missing = allIds.filter((id) => !valid.includes(id))
+        setOrder([...valid, ...missing])
+      } catch {
+        setOrder(allIds)
+      }
+    }
+    window.addEventListener(DATA_CHANGED_EVENT, reload)
+    return () => window.removeEventListener(DATA_CHANGED_EVENT, reload)
+  }, [allIds])
 
   return { order, setOrder }
 }

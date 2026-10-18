@@ -7,11 +7,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import seedToolsData from '../data/tools.json'
-import { SEED_VERSION } from '../lib/constants'
+import { DATA_CHANGED_EVENT, SEED_VERSION } from '../lib/constants'
 import type { Tool, ToolDraft } from '../types'
 
-const TOOLS_KEY = 'better-tools:tools'
-const GROUPS_KEY = 'better-tools:groups'
+// 键名导出给 src/lib/syncData.ts 用 —— 云端同步要按同样的键写回本地。
+// 让所有地方共用这一个常量，避免"两处各写一遍字符串、改一处忘一处"。
+export const TOOLS_KEY = 'better-tools:tools'
+export const GROUPS_KEY = 'better-tools:groups'
 const SEED_VERSION_KEY = 'better-tools:seed-version'
 
 const seedTools = seedToolsData as Tool[]
@@ -63,6 +65,18 @@ export function useTools() {
   useEffect(() => {
     localStorage.setItem(GROUPS_KEY, JSON.stringify(groups))
   }, [groups])
+
+  // 别处直接改了 localStorage（典型场景：云端同步把远端数据写回本地）时，重新读一遍。
+  // 为什么必须显式监听：useState 的初始值**只在首次挂载时算一次**，
+  // 之后 localStorage 变了它根本不知道，界面会一直显示旧数据。
+  useEffect(() => {
+    function reload() {
+      setTools(loadFromStorage<Tool[]>(TOOLS_KEY, [...seedTools]))
+      setGroups(loadFromStorage<string[]>(GROUPS_KEY, [...seedGroups]))
+    }
+    window.addEventListener(DATA_CHANGED_EVENT, reload)
+    return () => window.removeEventListener(DATA_CHANGED_EVENT, reload)
+  }, [])
 
   // ---------- 分组 ----------
   const addGroup = useCallback((name: string) => {
@@ -238,6 +252,11 @@ export function syncSeedTools(): void {
  */
 export function readTools(): Tool[] {
   return loadFromStorage<Tool[]>(TOOLS_KEY, [...seedTools])
+}
+
+/** 给「云端同步」用：直接读一次分组列表，不订阅变化。 */
+export function readGroups(): string[] {
+  return loadFromStorage<string[]>(GROUPS_KEY, [...seedGroups])
 }
 
 /**

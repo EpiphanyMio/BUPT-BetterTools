@@ -1,20 +1,37 @@
 // Cloudflare Workers 的部署配置。
 //
-// 这里声明的是一个「静态资源 Worker」——没有服务端代码，
-// 只是把 `pnpm build` 产出的 dist/ 目录当作网站发布。
+// 这个 Worker 同时干两件事：
+//   ① 发布 `pnpm build` 产出的 dist/（网站本身）
+//   ② 处理 /api/*（多端同步的接口，代码在 worker/index.ts）
 //
-// 为什么必须有这个文件：
-//   Cloudflare 自动构建的最后一步跑的是 `wrangler deploy`，它要知道"发布什么"。
-//   没有配置就找不到入口，构建会在几秒内直接失败 —— 线上于是永远停在上一次手动上传的版本。
-//   实测两次构建都是 0 秒失败，正是这个症状。
+// 为什么必须有这个文件：Cloudflare 自动构建的最后一步跑的是 `wrangler deploy`，
+// 它要知道"发布什么"。没有配置就找不到入口，构建会在几秒内直接失败 ——
+// 线上于是永远停在上一次手动上传的版本。
 {
   // 必须和 Cloudflare 上的 Worker 名字一致，否则会发布到一个新的同名服务上
   "name": "bupt-bettertools",
   "compatibility_date": "2026-10-18",
+  // Worker 入口：同源的 /api 后端。
+  "main": "worker/index.ts",
+  // D1 数据库：只存一行快照（建表语句见 worker/schema.sql）。
+  // ⚠️ 只能有这一个绑定，binding 名必须叫 DB —— worker/index.ts 里用的是 env.DB。
+  //    曾经被人加出过第二个同名库的绑定（binding: bupt_bettertools_sync），
+  //    结果是多绑了一个没人用的库，而且原来那个还是占位 id，部署照样失败。
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bupt-bettertools-sync",
+      "database_id": "0fc7584c-2127-4517-bfd6-2b834a3554e4"
+    }
+  ],
   "assets": {
     // 构建产物目录，对应 vite.config.ts 里的默认 outDir
     "directory": "./dist",
     // 请求的路径找不到对应文件时回落到 index.html（前端路由的常规做法）
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // ⚠️ 这一条不能少：让 /api/* **先**交给 Worker，而不是被静态资源层处理。
+    // 没有它的时候，"找不到同名文件就回落到 index.html"这条规则会把 /api/snapshot 也吃掉，
+    // 浏览器拿到的是一整页 HTML —— 前端 res.json() 只会抛一句看不懂的语法错误。
+    "run_worker_first": ["/api/*"]
   }
 }
