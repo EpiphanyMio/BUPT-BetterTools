@@ -1,0 +1,20 @@
+// Cloudflare Workers 的部署配置。
+//
+// 这里声明的是一个「静态资源 Worker」——没有服务端代码，
+// 只是把 `pnpm build` 产出的 dist/ 目录当作网站发布。
+//
+// 为什么必须有这个文件：
+//   Cloudflare 自动构建的最后一步跑的是 `wrangler deploy`，它要知道"发布什么"。
+//   没有配置就找不到入口，构建会在几秒内直接失败 —— 线上于是永远停在上一次手动上传的版本。
+//   实测两次构建都是 0 秒失败，正是这个症状。
+{
+  // 必须和 Cloudflare 上的 Worker 名字一致，否则会发布到一个新的同名服务上
+  "name": "bupt-bettertools",
+  "compatibility_date": "2026-10-18",
+  "assets": {
+    // 构建产物目录，对应 vite.config.ts 里的默认 outDir
+    "directory": "./dist",
+    // 请求的路径找不到对应文件时回落到 index.html（前端路由的常规做法）
+    "not_found_handling": "single-page-application"
+  }
+}
