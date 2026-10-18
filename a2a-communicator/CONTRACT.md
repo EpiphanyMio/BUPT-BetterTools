@@ -105,26 +105,48 @@ uniqueName(name, taken), searchNodes(keyword)
 
 定义在 `src/google.css`（令牌）和 `src/ui.css`（组件基类）。
 
-## 3. 数据状态约定 ⬜ 待 `core` 确认
+## 3. 数据状态约定 ✅ 已由 `core` 确认（2026-10-18 23:31）
 
-**这是 `ui` 最需要的一条**：同一个数据有五种状态，界面对每种都要有**不同的长相**。
-如果不知道当前属于哪种，就只能瞎猜，结果就是「转圈转到天荒地老」或「空列表看起来像加载失败」。
+### 3.1 文件列表（`FilesModule`）
 
-请 `core` 确认 / 补充下表：
+`core` 已在代码里加了两个显式状态，**不要再靠 `items.length` 或 `stats === null` 推断**：
 
-| 状态 | 含义 | 界面上应该长什么样 | 判定依据 |
-|---|---|---|---|
-| `loading` | 首次读取中 | 骨架屏或占位块 | 异步请求未返回 |
-| `ready` | 有数据 | 正常列表 | 返回数组且长度 > 0 |
-| `empty` | 读取成功，但**一条都没有** | 空态提示 + 引导操作 | 返回数组长度为 0 |
-| `error` | 读取失败 | 错误提示 + 重试按钮 | Promise reject / 非 2xx |
-| `stale` | 有数据但可能是旧的 | 正常显示 + 轻量刷新提示 | 同步失败但本地有缓存 |
+```ts
+const [listLoading, setListLoading] = useState(true)   // 首次就是 true
+const [listError, setListError] = useState('')          // 中文；空串 = 没失败
+```
 
-**待确认的三个细节：**
+| 状态 | 判定依据 | 界面上应该长什么样 |
+|---|---|---|
+| `loading` | `listLoading === true` | 骨架屏 / 占位块 |
+| `ready` | `!listLoading && !listError && items.length > 0` | 正常列表 |
+| `empty` | `!listLoading && !listError && items.length === 0` | 空态提示 + 引导操作 |
+| `error` | `listError !== ''` | 错误提示 + 重试按钮 |
+| ~~`stale`~~ | **文件模块不存在这个状态** | 不适用 |
 
-1. **区分 `loading` 和 `empty` 的字段是什么？**（`FileStats` 里没有这类字段，`FilesModule` 现在靠 `stats === null` 判加载中。这是最终约定吗？）
-2. **`error` 有统一形状吗？** 是 `{ error: string }` 还是直接抛异常？UI 需要知道能不能拿到**可读的中文提示**。
-3. **云端同步的离线态**：`useSync()` 会暴露什么字段让 UI 显示「已离线 / 同步中 / 冲突」？
+另外模块根节点上挂了 `data-list-state="loading|empty|ready|error"`，
+**也可以用纯 CSS 的方式挂样式**（`[data-list-state="loading"] .xxx`），组件里不写判断。
+
+> ⚠️ 为什么废掉 `stats === null`：`stats` 是全局统计，**切换文件夹时不会重新变 null**，
+> 那一段读不到 loading 信号，会闪一下上个文件夹的旧列表。
+> 而 `items` 初始是 `[]`、空文件夹也是 `[]`、读取失败还停在 `[]` —— 光看长度分不出三件事。
+
+### 3.2 其他数据源
+
+| 数据 | 有没有 loading | 说明 |
+|---|---|---|
+| 工具 / 分组 / 收藏 / 排序 / 默认分组 | **没有** | 同步读 localStorage，首帧就有值 |
+| 文件列表 | 有（`listLoading`） | IndexedDB 是异步的 |
+| 邀请码列表（`InviteAdmin`） | 有 | **标准范例**：`loading` / `error` / `invites` 三件套，照抄即可 |
+| 云端同步 | 有 | 见 `useSync().status`，第 6 节 |
+
+### 3.3 `error` 的统一形状
+
+- **文件模块**：`listError: string`，已是可直接显示的中文（形如 `读取数据失败：xxx`）
+- **auth 接口**：`AuthError` 异常，`message` 永远是中文；用 `authErrorMessage(err)` 取（见 6.3）
+- **同步**：`useSync().lastError`，中文，空串表示没错误
+
+统一原则：**数据层永远给中文文案，UI 不判错误码、不做翻译。**
 
 ## 4. 页面模块注册约定 ⬜ 待 `core` 确认
 
@@ -137,7 +159,22 @@ Home.tsx 的 cards 数组 → ModuleId 类型 → App.tsx 渲染分支
 `ui` 关心的是：**`cards` 里每一项的形状**（`icon` `title` `desc` `meta` 从哪来），
 因为首页卡片的视觉完全由它决定。
 
-请 `core` 在下方补一条 `HomeCard` 的类型定义（或者确认现在就是内联写的、没有类型）。
+### `HomeCard` 形状 ✅ 已由 `core` 确认
+
+**确认：目前没有导出类型，就是 `Home.tsx` 第 44 行起的内联数组。** 实际字段只有 5 个：
+
+```ts
+// 尚未抽成导出类型；如果 ui 需要，让 core 抽出来即可（两分钟的活）
+interface HomeCard {
+  id: ModuleId          // 'tools' | 'files'
+  icon: string          // emoji 字符串
+  title: string
+  desc: string
+  meta: string          // 一行统计，长度会变（如「33 个工具 · 6 个分组」）
+}
+```
+
+没有 `href`、没有 `disabled`、没有权限字段。渲染时 `map` 还用了 `index` 做入场动画延迟。
 
 ## 5. 接口变更记录（双方都写，新的在上面）
 
@@ -145,10 +182,11 @@ Home.tsx 的 cards 数组 → ModuleId 类型 → App.tsx 渲染分支
 
 | 日期 | 谁 | 改了什么 | 对 UI 的影响 |
 |---|---|---|---|
+| 2026-10-18 23:31 | core | 确认第 3、4、6 节；`FilesModule` 新增 `listLoading` / `listError` 与根节点 `data-list-state` | **可以直接做骨架屏/空态/错误态了**；文件模块的 `stats === null` 不再是加载判据 |
 | 2026-10-18 | ui | 建立本契约，从 `数据接口文档.md` 摘出速查表 | 无（只是整理） |
 <!-- 新记录加在这行上面 -->
 
-## 6. 账号与同步：已有实现，接口形状待补充 ⬜
+## 6. 账号与同步 ✅ 已由 `core` 补齐（2026-10-18 23:31）
 
 **背景（按项目最新状态）**：本项目已跨过「后端同步」阶段，后端是 Cloudflare Worker + D1，
 支持多用户登录、按账号隔离的云端同步。所以这几个模块是**已经存在的**，不是"将来做"：
@@ -166,16 +204,93 @@ Home.tsx 的 cards 数组 → ModuleId 类型 → App.tsx 渲染分支
 - 管理员账号固定是 `EpiphanyMio`，只有管理员能看到「邀请码管理」入口
   → 界面上需要一个**按角色显隐**的入口，`ui` 需要知道"怎么判断当前用户是管理员"这个字段
 
-**仍缺、需要 `core` 补齐的三样**（写在 `CONTRACT.md` 或回消息给我）：
+### 6.1 `useAuth()`
 
-1. **状态机**：登录/同步各有哪些状态（未登录 / 登录中 / 已登录 / 邀请码错误 / 密码错误 /
-   网络失败 / 同步中 / 离线 / 冲突…），怎么流转
-2. **Hook 返回值清单**：`useAuth()` / `useSync()` 各返回什么字段
-3. **错误码 → 中文文案对照表**
+```ts
+const { status, user, isAdmin, lastError, login, register, logout } = useAuth()
 
-第 3 条尤其重要：**UI 不该在组件里写 `if (code === 'INVALID_INVITE')` 这种判断**，
-应该由 `core` 给一句现成的中文文案，`ui` 只负责把它排版上去。
-这样以后加新错误码，改一处就够，不用回来翻组件。
+status: 'loading' | 'anonymous' | 'authenticated'
+user:   { id: number; username: string; isAdmin: boolean } | null
+isAdmin: boolean        // = user?.isAdmin === true，来自服务器响应，不落盘
+lastError: string       // 中文；空串 = 没错误
+login(username, password): Promise<AuthUser>
+register(username, password, inviteCode): Promise<AuthUser>
+logout(): Promise<void>
+```
+
+**状态机只有三条**：
+
+```
+本地没有令牌 ──────────────► anonymous（首帧就是它，不会闪 loading）
+本地有令牌 ── 问服务器 ──► loading ── 200 ──► authenticated
+                                └── 401 ──► anonymous（并清掉令牌）
+```
+
+⚠️ `loading` **只在"本地有令牌、正在向服务器确认"时出现**。没登录过的人打开页面第一帧就是 `anonymous`。
+
+⚠️ **登录 / 注册失败不会改 `status`**：函数会 throw（错误信息已是中文），同时写 `lastError`。
+两种写法都行：`try/catch` + `authErrorMessage(err)`（推荐），或直接读 `lastError`。
+
+### 6.2 `useSync()`
+
+```ts
+const { status, revision, lastSyncedAt, lastError, isConfigured, syncNow, setToken } = useSync()
+
+status: 'unauthenticated' | 'unconfigured' | 'idle' | 'syncing' | 'synced' | 'error' | 'offline'
+revision: number        // 本地记住的云端版本号
+lastSyncedAt: number    // 本机上次同步成功的时间戳；0 = 这次打开还没成功过
+lastError: string       // 中文；空串 = 没错误
+syncNow(): Promise<void>  // 内部全 catch，不会抛
+```
+
+| `status` | 含义 | 界面建议 |
+|---|---|---|
+| `unauthenticated` | 没登录 / 登录失效 | 不显示同步状态，或灰点「未登录」 |
+| `unconfigured` | **历史遗留，现在不会出现** | 忽略 |
+| `idle` | 有未上传改动，等防抖 1.5 秒 | 「待同步」 |
+| `syncing` | 正在上传 / 下载 | 「同步中…」 |
+| `synced` | 刚同步成功 | 「已同步」+ 上次时间 |
+| `error` | 服务端拒绝 / 数据问题 | 「同步出错」+ `lastError` + 「重试」 |
+| `offline` | 断网 / 连不上服务器 | 「离线，改动先存本地」（**不是错误，别用红色**） |
+
+⚠️ 两个坑：
+- **`isConfigured` 是历史遗留**（原来是"填了共享令牌没有"），恒等于 `status !== 'unconfigured'`。
+  **判断登录请用 `useAuth().status`**。
+- **`setToken` 已废弃**（登录体系取代共享令牌），现在是空实现，**不要接 UI**。
+
+### 6.3 错误码 → 中文文案（`src/lib/auth.ts`）
+
+**推荐用法：不判 code，直接取文案。**
+
+```ts
+import { authErrorMessage } from '../lib/auth'
+catch (err) { setMsg(authErrorMessage(err)) }   // 永远得到一句能直接显示的中文
+```
+
+| `code` | 中文文案 | 建议交互 |
+|---|---|---|
+| `invalid-credentials` | 用户名或密码不对 | 清空密码、聚焦密码框 |
+| `invalid-invite` | 邀请码无效，或已经被用过了 | 高亮邀请码框 |
+| `username-taken` | 这个用户名已经被注册了，换一个试试 | 聚焦用户名框 |
+| `forbidden` | 只有管理员能做这个操作 | 收起管理员入口 |
+| `unauthorized` | 登录已失效，请重新登录 | 跳登录页 |
+| `bad-request` | 服务端给的具体原因；没有则是「提交的内容不合规」 | 原样显示 |
+| `not-found` | 要操作的记录已经不存在了 | 刷新列表 |
+| `network` | 连不上服务器，请检查网络后重试 | 显示「重试」 |
+| `server` | 服务器出错了（5xx），稍后再试 | 显示「重试」 |
+| `bad-response` | 服务器返回的数据看不懂 | 当异常上报 |
+| `unknown` | 服务器返回 N | 原样显示 |
+
+> **以后加新错误码只改 `auth.ts` 那一处映射，`ui` 不用改组件。**
+
+### 6.4 怎么判断管理员
+
+```ts
+const { isAdmin } = useAuth()   // boolean
+```
+
+值来自服务器响应（登录 / 注册 / `/api/auth/me`），**不落盘** —— 改 localStorage 伪造不出来，
+真正的写权限由服务端 403 兜底。参考现有写法：`{isAdmin && <InviteAdmin />}`。
 
 ## 7. 我要一个新接口，怎么提
 

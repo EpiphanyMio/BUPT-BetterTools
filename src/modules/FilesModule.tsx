@@ -225,6 +225,12 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
   const [persisted, setPersisted] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  // 下面两个是给界面区分「加载中 / 空 / 出错」用的显式状态。
+  // 为什么不靠推断：items 初始就是 []，空文件夹也是 [] —— 光看长度分不出
+  // "还没读到" 和 "读到了但确实没有"；而读取失败也只会让 items 停在 []，
+  // 看上去和空文件夹一模一样。把这三件事拆成独立状态，界面就不用猜了。
+  const [listLoading, setListLoading] = useState(true)
+  const [listError, setListError] = useState('')
 
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
@@ -235,20 +241,34 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async (folderId: string) => {
-    const [children, chain, newStats, newQuota] = await Promise.all([
-      listChildren(folderId),
-      getPath(folderId),
-      getStats(),
-      getQuota(),
-    ])
-    setItems(children)
-    setPath(chain)
-    setStats(newStats)
-    setQuota(newQuota)
+    setListLoading(true)
+    try {
+      const [children, chain, newStats, newQuota] = await Promise.all([
+        listChildren(folderId),
+        getPath(folderId),
+        getStats(),
+        getQuota(),
+      ])
+      setItems(children)
+      setPath(chain)
+      setStats(newStats)
+      setQuota(newQuota)
+      setListError('') // 读成功就清掉上一次的错误
+    } catch (error) {
+      const message = '读取数据失败：' + String(error)
+      setListError(message)
+      // 过渡期也写进 notice：现在的提示条还靠它显示。
+      // 等界面把「错误态」做好之后，这行可以删掉。
+      setNotice(message)
+    } finally {
+      // finally 而不是 try 末尾：抛异常时也必须把"加载中"关掉，
+      // 否则界面会永远停在骨架屏上。
+      setListLoading(false)
+    }
   }, [])
 
   useEffect(() => {
-    refresh(currentId).catch((error) => setNotice('读取数据失败：' + String(error)))
+    void refresh(currentId)
     setSelected(new Set()) // 换文件夹时清空选择，避免误删看不见的东西
   }, [currentId, refresh])
 
@@ -509,8 +529,14 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
 
   const allSelected = rows.length > 0 && rows.every((row) => selected.has(row.node.id))
 
+  // 数据状态：让界面一眼看出该显示骨架屏 / 空态 / 错误 / 正常列表。
+  // 为什么不直接看 items.length：初始就是 []，空文件夹也是 []，读取失败也停在 [] ——
+  // 三种完全不同的情况值一样，光靠长度分不出来。
+  // 挂在根节点的 data-list-state 上，样式侧可以直接用 [data-list-state="loading"] 之类选择。
+  const listState = listLoading ? 'loading' : listError ? 'error' : items.length === 0 ? 'empty' : 'ready'
+
   return (
-    <div className="min-h-screen bg-surface-2 text-fg">
+    <div data-list-state={listState} className="min-h-screen bg-surface-2 text-fg">
       <div className="mx-auto max-w-5xl px-4 py-8">
         {/* 和工具箱同样的道理：窄屏必须纵向排列，
             否则右侧按钮（shrink-0）会把标题压成一条竖线。 */}
