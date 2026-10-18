@@ -50,6 +50,9 @@ Node 用的是系统那份 `C:\Program Files\nodejs`（v24.21.0）。
 - 注释与界面文案一律**中文**；注释解释「为什么这么做」。
 - 目录：`src/components/` 组件；`src/hooks/` 自定义 Hook（`useTools` 工具数据、`useFavorites` 收藏、`useToolOrder` 排序、`useDevSettings` 开发者设置）；`src/lib/` 常量与工具函数。
 - 新功能/改动完成后，**要更新 `DeveloperLogs/New Functions.md`**。
+- **要读写数据前先看 `DeveloperLogs/数据接口文档.md`**：里面列了所有 localStorage 键名、各 Hook 的签名、
+  `fileStore` 的每个异步函数。**不要绕过 `src/lib` / `src/hooks` 直接操作浏览器存储** ——
+  将来接后端时，要换的就是那一层。
 
 ## 5. New Functions 日志规则
 
