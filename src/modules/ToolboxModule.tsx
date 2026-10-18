@@ -257,16 +257,21 @@ export default function ToolboxModule({ onBack, onSearch }: ToolboxModuleProps) 
   return (
     <div className="min-h-screen bg-surface-2 text-fg">
       <div className="mx-auto max-w-5xl px-4 py-8">
-        {/* 标题区 */}
-        <header className="mb-6 flex items-start justify-between gap-4">
-          <div>
+        {/* 标题区
+            ⚠️ 窄屏必须纵向排列。原来这里是「左右分栏 + 右侧 shrink-0」：
+            右边四个按钮不肯收缩（319px），左边标题就被压到只剩几十像素宽，
+            逐字换行成一条竖条，而且按钮还会撑出屏幕。
+            改成 flex-col / sm:flex-row 之后，手机上标题在上、按钮在下，
+            min-w-0 + flex-wrap 再兜住"按钮一行放不下"的情况。 */}
+        <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+          <div className="min-w-0">
             <h1 className="text-3xl font-bold tracking-tight text-fg">🔗 常用工具</h1>
             <p className="mt-1 text-sm text-fg-subtle">
               收藏的网站和顺手的小工具，可拖动排序、按分组管理。
             </p>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
             <button type="button" onClick={onBack} className="btn btn-neutral">
               ← 返回首页
             </button>

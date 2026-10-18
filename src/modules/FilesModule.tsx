@@ -512,8 +512,10 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
   return (
     <div className="min-h-screen bg-surface-2 text-fg">
       <div className="mx-auto max-w-5xl px-4 py-8">
-        <header className="mb-5 flex items-start justify-between gap-4">
-          <div>
+        {/* 和工具箱同样的道理：窄屏必须纵向排列，
+            否则右侧按钮（shrink-0）会把标题压成一条竖线。 */}
+        <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+          <div className="min-w-0">
             <h1 className="text-3xl font-bold tracking-tight text-fg">📁 文件管理</h1>
             <p className="mt-1 text-sm text-fg-subtle">
               {stats
@@ -521,7 +523,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
                 : '读取中…'}
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
             <button
               type="button"
               onClick={onBack}
