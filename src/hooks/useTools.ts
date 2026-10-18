@@ -230,6 +230,17 @@ export function syncSeedTools(): void {
 }
 
 /**
+ * 给「全局搜索」用：直接读一次本地存着的工具列表。
+ *
+ * 为什么不用 useTools() 这个 Hook：
+ *   Hook 会订阅数据变化并触发重新渲染。搜索浮层每次打开读一次就够了，
+ *   没必要常驻一份状态 —— 何况浮层挂在 App 上，用 Hook 等于让整个应用跟着重渲染。
+ */
+export function readTools(): Tool[] {
+  return loadFromStorage<Tool[]>(TOOLS_KEY, [...seedTools])
+}
+
+/**
  * 给首页用：不挂载整个工具箱，只读一次本地数据算个数量。
  * 这样首页不必依赖工具箱模块内部的状态。
  */

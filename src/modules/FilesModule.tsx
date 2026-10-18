@@ -22,7 +22,6 @@ import {
   addFile,
   createFolder,
   deleteNodes,
-  getBlob,
   getPath,
   getQuota,
   getStats,
@@ -36,7 +35,10 @@ import {
   type FileStats,
   type SearchHit,
 } from '../lib/fileStore'
-import { canPreview, formatBytes, formatTime, guessMime, iconFor } from '../lib/fileUtils'
+import { canPreview, formatBytes, formatTime, iconFor } from '../lib/fileUtils'
+// 打开 / 下载文件的具体动作抽在了 fileActions 里 —— 全局搜索也要用同一套
+import { downloadFileNode, openFileNode } from '../lib/fileActions'
+import type { FileJumpRequest } from '../types'
 
 // 拖拽 id 前缀。dnd-kit 靠 id 区分"谁是谁"，加前缀判断起来最简单。
 const DRAG_PREFIX = 'node:' // 可拖动的行
@@ -45,6 +47,13 @@ const ROOT_DROP_ID = DROP_PREFIX + '__root__' // 面包屑上的"根目录"
 
 interface FilesModuleProps {
   onBack: () => void
+  /** 打开「全局搜索」浮层 */
+  onSearch: () => void
+  /**
+   * 从全局搜索点文件夹跳进来的请求；null 表示没有。
+   * seq 是序号，同一个文件夹连点两次时只有它会变，effect 才知道要再跳一次。
+   */
+  jump: FileJumpRequest | null
 }
 
 // ---------------------------------------------------------------- 单行
@@ -206,8 +215,9 @@ function RootDropChip({ active, onClick }: { active: boolean; onClick: () => voi
 
 // ---------------------------------------------------------------- 主组件
 
-export default function FilesModule({ onBack }: FilesModuleProps) {
-  const [currentId, setCurrentId] = useState('') // 空字符串 = 根目录
+export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps) {
+  // 空字符串 = 根目录。带着跳转请求进来时，直接打开目标文件夹。
+  const [currentId, setCurrentId] = useState(jump ? jump.folderId : '')
   const [items, setItems] = useState<FileNode[]>([])
   const [path, setPath] = useState<FileNode[]>([])
   const [stats, setStats] = useState<FileStats | null>(null)
@@ -247,6 +257,13 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
       .then(setPersisted)
       .catch(() => setPersisted(false))
   }, [])
+
+  // 从「全局搜索」点了一个文件夹跳进来：打开它，并清掉本模块自己的搜索关键词
+  useEffect(() => {
+    if (!jump) return
+    setCurrentId(jump.folderId)
+    setQuery('')
+  }, [jump])
 
   // 搜索：文件名一变就重新查一次（items 变化也要重查，因为移动/删除会改变结果）
   useEffect(() => {
@@ -380,36 +397,13 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
       return
     }
 
-    const blob = await getBlob(node.id)
-    if (!blob) {
-      setNotice('找不到这个文件的内容')
-      return
-    }
-
-    // Blob 本身没有"地址"，先让浏览器给它造一个临时地址（blob: 开头）
-    const typed = blob.type ? blob : new Blob([blob], { type: guessMime(node.name) })
-    const url = URL.createObjectURL(typed)
-    window.open(url, '_blank', 'noopener')
-
-    // ★ 不能立刻释放：新标签页还在加载这个地址，马上 revoke 会打不开。
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    const ok = await openFileNode(node)
+    if (!ok) setNotice('找不到这个文件的内容')
   }
 
   async function handleDownload(node: FileNode) {
-    const blob = await getBlob(node.id)
-    if (!blob) {
-      setNotice('找不到这个文件的内容')
-      return
-    }
-
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = node.name
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    const ok = await downloadFileNode(node)
+    if (!ok) setNotice('找不到这个文件的内容')
   }
 
   // ---------- 重命名 / 删除 ----------
@@ -527,13 +521,27 @@ export default function FilesModule({ onBack }: FilesModuleProps) {
                 : '读取中…'}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onBack}
-            className="shrink-0 rounded-btn border border-line bg-surface px-3.5 py-2 text-sm text-fg-muted shadow-e1 transition hover:border-line hover:bg-surface-3"
-          >
-            ← 返回首页
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={onBack}
+              className="rounded-btn border border-line bg-surface px-3.5 py-2 text-sm text-fg-muted shadow-e1 transition hover:border-line hover:bg-surface-3"
+            >
+              ← 返回首页
+            </button>
+
+            {/* 全局搜索：跨文件夹、跨模块地找东西。
+                和下面那个搜索框分工不同 —— 那个只筛"文件名"，且和文件在同一页。 */}
+            <button
+              type="button"
+              onClick={onSearch}
+              title="搜索工具和文件（Ctrl+K）"
+              aria-label="搜索工具和文件"
+              className="btn btn-neutral w-10 px-0 leading-none"
+            >
+              🔍
+            </button>
+          </div>
         </header>
 
         {/* 存储位置说明：这件事必须说清楚，否则用户会以为文件在云端 */}

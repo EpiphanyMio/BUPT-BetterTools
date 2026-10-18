@@ -19,3 +19,11 @@ export interface ToolDraft {
   icon: string
   description: string
 }
+
+// 「全局搜索」在结果里点到文件夹时，需要让 App 切到文件管理并打开那个目录。
+// 用一个带序号（seq）的请求对象，而不是直接传 folderId ——
+// 因为同一个文件夹连点两次，只有 seq 变了，界面才知道"又收到一次新请求"。
+export interface FileJumpRequest {
+  folderId: string
+  seq: number
+}

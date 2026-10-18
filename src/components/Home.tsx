@@ -15,13 +15,15 @@ export type ModuleId = 'tools' | 'files'
 
 interface HomeProps {
   onOpen: (module: ModuleId) => void
+  /** 打开「全局搜索」浮层（真正的输入和结果都在那个浮层里） */
+  onSearch: () => void
 }
 
 // Google 品牌四色。用在标题的四个字母和每张卡片的图标底座上 ——
 // 这是 Google 设计里最容易被认出来的特征：四色只做"点"，不铺面。
 const GOOGLE_COLORS = ['#4285f4', '#ea4335', '#fbbc04', '#34a853']
 
-export default function Home({ onOpen }: HomeProps) {
+export default function Home({ onOpen, onSearch }: HomeProps) {
   // 工具的个数直接从浏览器本地读一次，不需要挂载整个工具箱
   const [toolCounts] = useState(() => readToolCounts())
   const [fileInfo, setFileInfo] = useState('读取中…')
@@ -81,6 +83,26 @@ export default function Home({ onOpen }: HomeProps) {
           </p>
         </header>
 
+        {/* 全局搜索入口。
+            它看起来像输入框，其实是个按钮 —— 点一下打开搜索浮层。
+            为什么不在首页直接内嵌一个能打字的搜索框：
+            那样首页要维护一份完整的搜索界面（结果列表、键盘选择、文件预览），
+            而浮层已经把这些都做好了。这里只负责"让人一眼看见有这个功能"。 */}
+        <button
+          type="button"
+          onClick={onSearch}
+          className="field mb-8 flex items-center gap-3 text-left text-fg-subtle"
+        >
+          <span aria-hidden="true" className="shrink-0">
+            🔍
+          </span>
+          <span className="flex-1">搜索工具和文件…</span>
+          {/* 桌面端才显示快捷键提示：手机上没有物理键盘，显示了反而占地方 */}
+          <kbd className="hidden shrink-0 rounded border border-line px-1.5 py-0.5 text-xs sm:inline">
+            Ctrl K
+          </kbd>
+        </button>
+
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {cards.map((card, index) => (
             <button
@@ -120,7 +142,11 @@ export default function Home({ onOpen }: HomeProps) {
         </div>
 
         <p className="mt-12 text-center text-xs text-fg-subtle">
-          所有数据都存在这台电脑的浏览器里，没有上传到服务器 · 阶段 1
+          {/* 页脚说明分两件事讲清楚：
+              ① 网站本身在哪 —— 现在是部署在公网上的静态文件；
+              ② 你的数据在哪 —— 始终只在这台设备的浏览器里，不上传。
+              上线前写的是"没有上传到服务器"，上线后容易读成"网站不在服务器上"，所以改掉了。 */}
+          网站托管在 bupt-bettertools.yuesu76.workers.dev · 工具和文件只存在这台设备的浏览器里，不会上传
         </p>
       </div>
     </div>

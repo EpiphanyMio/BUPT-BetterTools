@@ -39,13 +39,16 @@ import CategoryTabs from '../components/CategoryTabs'
 import ToolCard from '../components/ToolCard'
 import GroupEditor from '../components/GroupEditor'
 import ToolEditModal from '../components/ToolEditModal'
+import ToolDetailModal from '../components/ToolDetailModal'
 import GeneralSettingsPanel from '../components/GeneralSettingsPanel'
 
 interface ToolboxModuleProps {
   onBack: () => void
+  /** 打开「全局搜索」浮层 */
+  onSearch: () => void
 }
 
-export default function ToolboxModule({ onBack }: ToolboxModuleProps) {
+export default function ToolboxModule({ onBack, onSearch }: ToolboxModuleProps) {
   // ---- 通用设置 ----
   // ⚠️ 必须写在下面的 useState 之前：初始分组要读它的值
   const {
@@ -60,6 +63,7 @@ export default function ToolboxModule({ onBack }: ToolboxModuleProps) {
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false) // 是否只看收藏
   const [editorOpen, setEditorOpen] = useState(false)               // 「编辑分组」弹窗
   const [editingToolId, setEditingToolId] = useState<string | null>(null) // 卡片快速编辑的工具
+  const [detailToolId, setDetailToolId] = useState<string | null>(null)   // 卡片右上角 ⓘ 打开详情的工具
   const [settingsOpen, setSettingsOpen] = useState(false)           // 「通用设置」弹窗
 
   // ---- 数据：收藏 + 工具/分组 ----
@@ -148,8 +152,16 @@ export default function ToolboxModule({ onBack }: ToolboxModuleProps) {
     [tools, editingToolId],
   )
 
+  // 正在查看详情的工具。用 id 而不是直接存对象 ——
+  // 这样在详情打开时如果工具被改名/改分组，面板会立刻显示最新内容。
+  const detailTool = useMemo(
+    () => tools.find((tool) => tool.id === detailToolId) ?? null,
+    [tools, detailToolId],
+  )
+
   const closeEditor = useCallback(() => setEditorOpen(false), [])
   const closeToolEditor = useCallback(() => setEditingToolId(null), [])
+  const closeDetail = useCallback(() => setDetailToolId(null), [])
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
 
   // 由开发者设置生成的自动滚动配置（主页和编辑弹窗共用同一份）
@@ -259,6 +271,18 @@ export default function ToolboxModule({ onBack }: ToolboxModuleProps) {
               ← 返回首页
             </button>
 
+            {/* 全局搜索：同时搜工具和文件。和下面那个搜索框不冲突 ——
+                那个是"在当前分组里筛卡片"，这个是"翻遍整个库找东西"。 */}
+            <button
+              type="button"
+              onClick={onSearch}
+              title="搜索工具和文件（Ctrl+K）"
+              aria-label="搜索工具和文件"
+              className="btn btn-neutral w-10 px-0 leading-none"
+            >
+              🔍
+            </button>
+
             {/* 主题切换：点一下按「跟随系统 → 浅色 → 深色」循环。
                 用 emoji 当图标，改动最小、不引入图标库。 */}
             <button
@@ -356,6 +380,7 @@ export default function ToolboxModule({ onBack }: ToolboxModuleProps) {
                       tool={tool}
                       isFavorite={isFavorite(tool.id)}
                       onToggleFavorite={toggleFavorite}
+                      onOpenDetail={setDetailToolId}
                       onEdit={setEditingToolId}
                       onDelete={removeTool}
                     />
@@ -395,6 +420,14 @@ export default function ToolboxModule({ onBack }: ToolboxModuleProps) {
         onSave={updateTool}
         onDelete={removeTool}
         onClose={closeToolEditor}
+      />
+
+      {/* 卡片右上角 ⓘ 打开的工具详情面板 */}
+      <ToolDetailModal
+        tool={detailTool}
+        isFavorite={detailTool ? isFavorite(detailTool.id) : false}
+        onToggleFavorite={toggleFavorite}
+        onClose={closeDetail}
       />
 
       {/* 右上角「通用设置」（开发者设置在其中作为二级窗口） */}
