@@ -38,7 +38,9 @@ Node 用的是系统那份 `C:\Program Files\nodejs`（v24.21.0）。
 
 **预览**：<http://localhost:5173/> —— Vite 绑的是 IPv6，必须用 `localhost`，不能用 `127.0.0.1`。
 
-**Git**：仓库已接入 GitHub，`origin` → <https://github.com/EpiphanyMio/BetterTools>，分支 `main`。
+**Git**：仓库已接入 GitHub，`origin` → <https://github.com/EpiphanyMio/BUPT-BetterTools>，分支 `main`。
+**推上去就会自动部署**到 <https://bupt-bettertools.yuesu76.workers.dev/>（Cloudflare Workers 静态托管，构建命令 `pnpm build`，产物目录 `dist/`）。
+所以不需要手动传 `dist/`，`git push` 之后等一两分钟就行。
 联网的 git 命令（`fetch` / `pull` / `push` / `ls-remote`）在受限沙箱下会因 TLS 被拦截（报 `schannel: SEC_E_NO_CREDENTIALS`），**必须用完全权限**运行；凭据已缓存，通常不会再弹登录框。
 
 **改完必须验证**：`pnpm build` 必须通过；必要时再用开发服务器确认新模块能编译。
