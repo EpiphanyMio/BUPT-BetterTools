@@ -173,9 +173,11 @@ export default function ToolCard({
           // ★ 限两行：line-clamp-2 会在第二行末尾显示省略号。
           //   配合 min-h-10（正好两行文字高），简介无论一行、两行还是更长，
           //   占的高度都一样 —— 这是卡片等高的另一半保证。
+          // ★ pr-16：右上角的详情/收藏按钮是绝对定位浮在上面的，
+          //   不预留这块宽度的话，第一行备注的文字会钻到按钮底下被挡住。
           <p
             data-card-desc
-            className="mt-2 line-clamp-2 min-h-10 text-sm leading-5 text-fg-subtle"
+            className="mt-2 line-clamp-2 min-h-10 pr-16 text-sm leading-5 text-fg-subtle"
           >
             {tool.description}
           </p>
