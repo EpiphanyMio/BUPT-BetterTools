@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import seedToolsData from '../data/tools.json'
 import { DATA_CHANGED_EVENT, SEED_VERSION } from '../lib/constants'
+import { isGuest } from '../lib/guestMode'
 import type { Tool, ToolDraft } from '../types'
 
 // 键名导出给 src/lib/syncData.ts 用 —— 云端同步要按同样的键写回本地。
@@ -80,12 +81,18 @@ export function useTools() {
 
   // ---------- 分组 ----------
   const addGroup = useCallback((name: string) => {
+    // 访客预览是「只读」的：界面上把按钮禁掉只是提示，总会有漏禁的地方，
+    // 真正的保证在数据层 —— 每个写操作入口都先问一次 isGuest()，是访客就直接返回，
+    // 状态一个字节都不变。下面每个写函数都照这个格式加了一道，原因相同。
+    if (isGuest()) return
     const clean = name.trim()
     if (!clean) return
     setGroups((prev) => (prev.includes(clean) ? prev : [...prev, clean]))
   }, [])
 
   const removeGroup = useCallback((name: string) => {
+    // 访客只读：删分组会连带删掉组里的工具，更不能放行
+    if (isGuest()) return
     setGroups((prev) => prev.filter((group) => group !== name))
     // 分组没了，组里的工具也一起删掉
     setTools((prev) => prev.filter((tool) => tool.category !== name))
@@ -96,6 +103,8 @@ export function useTools() {
   // 这里不需要额外存一份"顺序表"：groups 数组本身就有顺序，
   // 数组里靠前的分组，标签就排在前面。所以"排序"就是把数组元素换个位置。
   const reorderGroups = useCallback((from: number, to: number) => {
+    // 访客只读：拖动分组改顺序也算改内容
+    if (isGuest()) return
     setGroups((prev) => {
       // 原地不动或下标越界：返回原数组。
       // 返回同一个引用，React 就知道"没变化"，不会触发多余的重新渲染。
@@ -111,6 +120,8 @@ export function useTools() {
 
   // ---------- 工具 ----------
   const addTool = useCallback((category: string, draft: ToolDraft) => {
+    // 访客只读：不许新增工具
+    if (isGuest()) return
     setTools((prev) => [
       ...prev,
       {
@@ -125,6 +136,8 @@ export function useTools() {
   }, [])
 
   const updateTool = useCallback((id: string, draft: ToolDraft) => {
+    // 访客只读：不许改工具信息
+    if (isGuest()) return
     setTools((prev) =>
       prev.map((tool) =>
         tool.id === id
@@ -142,16 +155,22 @@ export function useTools() {
 
   // 把某个工具移到另一个分组
   const moveTool = useCallback((id: string, category: string) => {
+    // 访客只读：换分组也是写
+    if (isGuest()) return
     setTools((prev) =>
       prev.map((tool) => (tool.id === id ? { ...tool, category } : tool)),
     )
   }, [])
 
   const removeTool = useCallback((id: string) => {
+    // 访客只读：不许删工具
+    if (isGuest()) return
     setTools((prev) => prev.filter((tool) => tool.id !== id))
   }, [])
 
   const resetAll = useCallback(() => {
+    // 访客只读：恢复默认会覆盖掉本地数据，是最危险的一个写操作
+    if (isGuest()) return
     setTools([...seedTools])
     setGroups([...seedGroups])
   }, [])
@@ -162,6 +181,10 @@ export function useTools() {
   // 一旦你在页面上改过东西，数据就存进 localStorage 了 —— 之后默认清单再更新，
   // 你的浏览器也不会自动看到。这个操作把缺的补上，已经有的和你自己加的一概不动。
   const mergeSeed = useCallback(() => {
+    // 访客只读：合并默认清单会往本地加数据，属于写。
+    // ⚠️ 它有返回值（补了几个工具），所以返回 0 而不是 undefined ——
+    // 界面拿这个数字弹提示，返回 undefined 会显示成 NaN。
+    if (isGuest()) return 0
     const existingUrls = new Set(tools.map((tool) => normalizeUrl(tool.url)))
     const missingTools = seedTools.filter(
       (tool) => !existingUrls.has(normalizeUrl(tool.url)),

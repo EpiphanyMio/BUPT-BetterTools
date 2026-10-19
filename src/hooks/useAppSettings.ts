@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { ALL, DATA_CHANGED_EVENT } from '../lib/constants'
+import { isGuest } from '../lib/guestMode'
 
 // 键名导出给 src/lib/syncData.ts 用（云端同步要按同样的键写回）
 export const APP_SETTINGS_KEY = 'better-tools:app-settings'
@@ -59,12 +60,17 @@ export function useAppSettings() {
 
   const updateSetting = useCallback(
     <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+      // 访客预览是「只读」的：设置项会被存进 localStorage、还会跟着云端同步，
+      // 属于用户数据的一部分，界面漏禁了也得在这里拦住。
+      if (isGuest()) return
       setSettings((prev) => ({ ...prev, [key]: value }))
     },
     [],
   )
 
   const resetSettings = useCallback(() => {
+    // 访客只读：恢复默认会覆盖本地设置
+    if (isGuest()) return
     setSettings({ ...DEFAULT_APP_SETTINGS })
   }, [])
 

@@ -9,6 +9,7 @@
 //   它本质上是"接线层"，必须同时认识两边。hooks 不会回头 import 它，所以不存在循环依赖。
 
 import { DATA_CHANGED_EVENT } from './constants'
+import { isGuest } from './guestMode'
 import { APP_SETTINGS_KEY, DEFAULT_APP_SETTINGS } from '../hooks/useAppSettings'
 import { FAVORITES_KEY } from '../hooks/useFavorites'
 import { GROUPS_KEY, TOOLS_KEY, readGroups, readTools } from '../hooks/useTools'
@@ -44,6 +45,10 @@ export function readSyncData(): SyncData {
  * 光写存储界面不会变 —— 这也是"同步完看起来没反应"的典型原因。
  */
 export function writeSyncData(data: SyncData): void {
+  // 访客没有会话，同步本来就不会跑；但这是「云端数据覆盖本地数据」的唯一入口，
+  // 加一道闸更保险：是访客就直接返回 —— 不写存储，也不 dispatch DATA_CHANGED_EVENT。
+  // 连广播都要跳过，因为广播会让各 Hook 立刻重读一遍，等于承认了这次"写入"。
+  if (isGuest()) return
   localStorage.setItem(TOOLS_KEY, JSON.stringify(data.tools))
   localStorage.setItem(GROUPS_KEY, JSON.stringify(data.groups))
   localStorage.setItem(FAVORITES_KEY, JSON.stringify(data.favorites))

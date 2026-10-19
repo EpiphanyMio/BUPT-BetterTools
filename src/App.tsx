@@ -16,7 +16,9 @@ import ToolboxModule from './modules/ToolboxModule'
 import FilesModule from './modules/FilesModule'
 import GlobalSearch from './components/GlobalSearch'
 import AuthScreen from './components/AuthScreen'
+import GuestBanner from './components/GuestBanner'
 import { useAuth } from './hooks/useAuth'
+import { useGuest } from './hooks/useGuest'
 import { syncSeedTools } from './hooks/useTools'
 import { resetSyncState, setSnapshotApplier, setSyncSource, syncNow } from './lib/sync'
 import { readSyncData, writeSyncData } from './lib/syncData'
@@ -40,6 +42,10 @@ setSnapshotApplier(writeSyncData)
 export default function App() {
   const { status } = useAuth()
 
+  // 访客（只读）预览：isGuest 决定"没登录也放行主界面"，
+  // exitGuest 用来在真登录成功后把标记清掉。
+  const { isGuest, exitGuest } = useGuest()
+
   // null 表示停在首页
   const [active, setActive] = useState<ModuleId | null>(null)
 
@@ -56,6 +62,19 @@ export default function App() {
   // 同一段登录态里只启动一次同步。StrictMode 会把 effect 跑两遍，
   // 没有这个标记就会打两次请求（第二次还会把界面提前放行）。
   const booted = useRef(false)
+
+  // 登录成功就把"访客"标记清掉。
+  //
+  // 为什么必须清：访客标记存在 localStorage 里（所以刷新后还在）。如果登录后不清，
+  // 下次刷新、会话又刚好过期时，用户会被当成访客放进来 —— 顶上还挂着只读横幅，
+  // 明明已经登录过却什么也改不了，而且看不出原因。
+  //
+  // 为什么单独一个 effect，而不是塞进下面的启动流程：
+  // 那段流程开头有 booted 这个"本次会话只跑一次"的守卫，塞进去有被跳过的风险；
+  // 而"清标记"这件事每次从访客变成已登录都必须发生，不能省。
+  useEffect(() => {
+    if (status === 'authenticated' && isGuest) exitGuest()
+  }, [status, isGuest, exitGuest])
 
   useEffect(() => {
     // 还在向服务器确认令牌的时候什么都别动：这时 dirty / revision 都是上一次
@@ -97,8 +116,9 @@ export default function App() {
   //   这样不管焦点在哪、当前在哪个模块，按下去都生效。
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      // 没登录时主界面根本没渲染，快捷键也不该起作用
-      if (status !== 'authenticated') return
+      // 没登录且不是访客时，主界面根本没渲染，快捷键也不该起作用。
+      // 访客看得到主界面，而搜索是只读操作（只是查、不改），所以对他们要放行。
+      if (status !== 'authenticated' && !isGuest) return
 
       // Ctrl+K / ⌘K：打开或收起搜索。这是各类工具里"快速跳转"的通用约定。
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
@@ -123,7 +143,7 @@ export default function App() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [status])
+  }, [status, isGuest])
 
   // 全局搜索点到文件夹 → 切到文件管理，并把目标文件夹告诉它
   function jumpToFolder(folderId: string) {
@@ -134,16 +154,35 @@ export default function App() {
 
   // ---- 登录门禁 ----
   //
-  // 三种情况各有一套界面，且都在"渲染主界面"之前返回：
-  //   loading       本地存着令牌，正在问服务器它还有效吗（通常几十毫秒）
-  //   anonymous     没登录 → 只有 AuthScreen，主界面一行都不渲染
-  //   !cloudReady   登录成功了，但云端那份数据还没落地 → 等它
+  // 下面几种情况各有一套界面，且都在"渲染主界面"之前返回：
+  //   loading                         本地存着令牌，正在问服务器它还有效吗（通常几十毫秒）
+  //   已登录但云端快照还没落地         登录成功了，但云端那份数据还没落地 → 等它
+  //   没登录且不是访客                 → 只有 AuthScreen，主界面一行都不渲染
+  //   访客                             → 直接放行主界面（只读，顶上一条横幅）
+  //
+  // ⚠️ 访客**不走**"等云端快照"那一步：访客没有会话，syncNow 本来就是空转，
+  // 让他对着"正在同步你的云端数据…"干等（最长 10 秒）纯属莫名其妙。
+  // 所以这里的判断顺序是：先判登录态，再判访客，最后才轮到同步过渡页。
   if (status === 'loading') return <BootScreen text="正在检查登录状态…" />
-  if (status === 'anonymous') return <AuthScreen />
-  if (!cloudReady) return <BootScreen text="正在同步你的云端数据…" />
+  if (status === 'authenticated' && !cloudReady) {
+    return <BootScreen text="正在同步你的云端数据…" />
+  }
+  if (status !== 'authenticated' && !isGuest) return <AuthScreen />
 
   return (
     <>
+      {/* 访客：顶部只读横幅 + 一格等高空白。
+          横幅是 fixed（不随页面滚动跑掉），所以它盖住的是视口最上面 40px；
+          垫这格 h-10（= 2.5rem = 40px）把主界面整体顶下来，正好落在横幅下沿，
+          这样各模块顶部那排按钮永远不会被挡住。
+          ⚠️ 这个 h-10 必须和 GuestBanner 里的 h-10 保持一致。 */}
+      {isGuest && (
+        <>
+          <GuestBanner />
+          <div aria-hidden="true" className="h-10" />
+        </>
+      )}
+
       {active === 'tools' && (
         <ToolboxModule onBack={goHome} onSearch={() => setSearchOpen(true)} />
       )}

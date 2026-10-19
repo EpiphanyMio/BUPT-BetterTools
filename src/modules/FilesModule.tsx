@@ -38,12 +38,18 @@ import {
 import { canPreview, formatBytes, formatTime, iconFor } from '../lib/fileUtils'
 // 打开 / 下载文件的具体动作抽在了 fileActions 里 —— 全局搜索也要用同一套
 import { downloadFileNode, openFileNode } from '../lib/fileActions'
+import { useGuest } from '../hooks/useGuest'
 import type { FileJumpRequest } from '../types'
 
 // 拖拽 id 前缀。dnd-kit 靠 id 区分"谁是谁"，加前缀判断起来最简单。
 const DRAG_PREFIX = 'node:' // 可拖动的行
 const DROP_PREFIX = 'folder:' // 可投放的文件夹
 const ROOT_DROP_ID = DROP_PREFIX + '__root__' // 面包屑上的"根目录"
+
+// 访客模式下所有写操作按钮的统一悬停说明。
+// 为什么抽成常量：禁用态在视觉上只是变淡，用户看不出"为什么点不动"，
+// title 是唯一能说一句的地方；这句话要出现在好几个按钮上，零散地写迟早写岔。
+const GUEST_LOCK_HINT = '访客预览模式不能修改'
 
 interface FilesModuleProps {
   onBack: () => void
@@ -68,6 +74,8 @@ interface NodeRowProps {
   onDownload: (node: FileNode) => void
   onRename: (node: FileNode) => void
   onDelete: (node: FileNode) => void
+  /** 只读（访客）模式：重命名 / 删除这类写操作一律禁用 */
+  readOnly: boolean
 }
 
 function NodeRow({
@@ -79,11 +87,16 @@ function NodeRow({
   onDownload,
   onRename,
   onDelete,
+  readOnly,
 }: NodeRowProps) {
   // 这一行同时有两个身份：可以被拖动、文件夹还能接收别人。
   // 两个 hook 各给一个 ref，所以用一个回调把同一个元素交给它们两边。
+  // 访客下直接关掉拖动：拖动 = moveNode，是实打实的写操作。
+  // 数据层虽然也会拦（fileStore 的写函数会抛错），但拖完松手才报错、
+  // 界面还会先"跟手"动一下，不如一开始就不让拖。
   const { attributes, listeners, setNodeRef: setDragRef, isDragging } = useDraggable({
     id: DRAG_PREFIX + node.id,
+    disabled: readOnly,
   })
   const { setNodeRef: setDropRef, isOver } = useDroppable({
     id: DROP_PREFIX + node.id,
@@ -170,17 +183,24 @@ function NodeRow({
             下载
           </button>
         )}
+        {/* 重命名 / 删除是写操作：访客点不动。
+            打开、下载是读操作，保持可用 —— 访客就是来看的。
+            只补一个 disabled:opacity-50（项目里已有的写法），不动别的类名。 */}
         <button
           type="button"
           onClick={() => onRename(node)}
-          className="rounded-lg px-2 py-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg"
+          disabled={readOnly}
+          title={readOnly ? GUEST_LOCK_HINT : undefined}
+          className="rounded-lg px-2 py-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg disabled:opacity-50"
         >
           重命名
         </button>
         <button
           type="button"
           onClick={() => onDelete(node)}
-          className="rounded-lg px-2 py-1 text-danger transition hover:bg-danger-bg"
+          disabled={readOnly}
+          title={readOnly ? GUEST_LOCK_HINT : undefined}
+          className="rounded-lg px-2 py-1 text-danger transition hover:bg-danger-bg disabled:opacity-50"
         >
           删除
         </button>
@@ -216,6 +236,9 @@ function RootDropChip({ active, onClick }: { active: boolean; onClick: () => voi
 // ---------------------------------------------------------------- 主组件
 
 export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps) {
+  // 访客（只读）模式。只取 isGuest：退出访客的入口在顶部横幅里，这个模块不用管。
+  const { isGuest } = useGuest()
+
   // 空字符串 = 根目录。带着跳转请求进来时，直接打开目标文件夹。
   const [currentId, setCurrentId] = useState(jump ? jump.folderId : '')
   const [items, setItems] = useState<FileNode[]>([])
@@ -240,8 +263,13 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const refresh = useCallback(async (folderId: string) => {
-    setListLoading(true)
+  // options.silent：同一文件夹内的增量刷新（上传 / 重命名 / 删除 / 移动之后）不显示骨架屏。
+  //
+  // 为什么要区分：这些操作做完也要重新读一遍列表，但列表里已有的内容其实还在。
+  // 把它整个换成骨架屏，用户会觉得"页面又重载了" —— 上传一个文件就闪一下整页，很突兀。
+  // 只有"首次进入 / 切换文件夹"这种内容真的换了的场景，才值得让骨架屏出现。
+  const refresh = useCallback(async (folderId: string, options?: { silent?: boolean }) => {
+    if (!options?.silent) setListLoading(true)
     try {
       const [children, chain, newStats, newQuota] = await Promise.all([
         listChildren(folderId),
@@ -361,7 +389,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     setBusy(true)
     try {
       await createFolder(finalName, currentId)
-      await refresh(currentId)
+      await refresh(currentId, { silent: true })
       setNotice('已新建文件夹「' + finalName + '」')
     } catch (error) {
       setNotice('新建失败：' + String(error))
@@ -394,7 +422,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
         added++
       }
 
-      await refresh(currentId)
+      await refresh(currentId, { silent: true })
       setNotice(
         renamed.length > 0
           ? '已上传 ' + added + ' 个文件；检测到 ' + renamed.length + ' 个重名，已自动改名保留两者：' + renamed.join('、')
@@ -449,7 +477,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     }
 
     await renameNode(node.id, finalName)
-    await refresh(currentId)
+    await refresh(currentId, { silent: true })
     setNotice('已重命名为「' + finalName + '」')
   }
 
@@ -461,7 +489,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     if (!window.confirm('确定删除' + what + '吗？此操作无法撤销。')) return
 
     const count = await deleteNodes([node.id])
-    await refresh(currentId)
+    await refresh(currentId, { silent: true })
     setNotice(count > 1 ? '已删除 ' + count + ' 项' : '已删除')
   }
 
@@ -481,7 +509,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     try {
       const count = await deleteNodes(list)
       setSelected(new Set())
-      await refresh(currentId)
+      await refresh(currentId, { silent: true })
       setNotice('已删除 ' + count + ' 项')
     } catch (error) {
       setNotice('删除失败：' + String(error))
@@ -521,7 +549,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
       return
     }
 
-    await refresh(currentId)
+    await refresh(currentId, { silent: true })
     setNotice('已移动')
   }
 
@@ -588,10 +616,13 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
 
         {/* 操作栏 */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
+          {/* 新建 / 上传都是写操作：访客禁用（disabled 走原生属性，
+              视觉上靠已有的 disabled:opacity-50 / .btn:disabled）。 */}
           <button
             type="button"
             onClick={handleCreateFolder}
-            disabled={busy}
+            disabled={busy || isGuest}
+            title={isGuest ? GUEST_LOCK_HINT : undefined}
             className="rounded-btn bg-surface px-3.5 py-2 text-sm text-fg-muted ring-1 ring-line transition hover:bg-surface-3 disabled:opacity-50"
           >
             📁 新建文件夹
@@ -599,7 +630,8 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={busy}
+            disabled={busy || isGuest}
+            title={isGuest ? GUEST_LOCK_HINT : undefined}
             className="btn btn-primary disabled:opacity-50"
           >
             ⬆ 上传文件
@@ -644,10 +676,12 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
             >
               取消选择
             </button>
+            {/* 批量删除同样是写操作，访客禁用 */}
             <button
               type="button"
               onClick={handleDeleteSelected}
-              disabled={busy}
+              disabled={busy || isGuest}
+              title={isGuest ? GUEST_LOCK_HINT : undefined}
               className="ml-auto rounded-lg bg-danger px-3 py-1.5 text-white transition hover:bg-danger disabled:opacity-50"
             >
               🗑 删除选中
@@ -718,6 +752,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
                   onDownload={handleDownload}
                   onRename={handleRename}
                   onDelete={handleDelete}
+                  readOnly={isGuest}
                 />
               ))}
             </ul>

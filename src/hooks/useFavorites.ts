@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { DATA_CHANGED_EVENT } from '../lib/constants'
+import { isGuest } from '../lib/guestMode'
 
 // 键名导出给 src/lib/syncData.ts 用（云端同步要按同样的键写回）
 export const FAVORITES_KEY = 'better-tools:favorites'
@@ -42,6 +43,8 @@ export function useFavorites() {
   // 切换收藏：已经收藏就移除，没收藏就加进去。
   // setFavorites 传函数形式，能拿到"最新的旧值" prev，避免并发更新出错。
   function toggleFavorite(id: string) {
+    // 访客预览是「只读」的：收藏也是一份数据，界面漏禁了也得在这里拦住。
+    if (isGuest()) return
     setFavorites((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     )

@@ -8,6 +8,7 @@
 // └─────────────────────────────────────────────────────────────┘
 
 import { useCallback, useEffect, useState } from 'react'
+import { isGuest } from '../lib/guestMode'
 
 const STORAGE_KEY = 'better-tools:dev-settings'
 
@@ -45,12 +46,17 @@ export function useDevSettings() {
 
   const updateSetting = useCallback(
     (key: DevSettingKey, value: DevSettings[DevSettingKey]) => {
+      // 访客预览是「只读」的：开发者参数同样存在 localStorage 里，
+      // 也是"内容"的一部分，不能因为面板藏得深就放过。
+      if (isGuest()) return
       setSettings((prev) => ({ ...prev, [key]: value }) as DevSettings)
     },
     [],
   )
 
   const resetSettings = useCallback(() => {
+    // 访客只读：恢复默认会覆盖本地参数
+    if (isGuest()) return
     setSettings({ ...DEFAULT_DEV_SETTINGS })
   }, [])
 

@@ -12,6 +12,7 @@ import { ALL } from '../lib/constants'
 import type { AppSettings } from '../hooks/useAppSettings'
 import type { DevSettingKey, DevSettings } from '../hooks/useDevSettings'
 import { THEME_OPTIONS, useTheme } from '../hooks/useTheme'
+import { useGuest } from '../hooks/useGuest'
 import DevSettingsContent from './DevSettingsContent'
 import SyncSettings from './SyncSettings'
 
@@ -42,6 +43,12 @@ export default function GeneralSettingsPanel({
   // 主题是全局单例状态（见 hooks/useTheme.ts），
   // 这里读到的和头部那个切换按钮读到的永远是同一份，不会错位。
   const { mode: themeMode, setTheme, resolved, systemDark } = useTheme()
+
+  // 访客（只读）模式。
+  // ⚠️ 只禁用"会改网页内容"的项（默认分组、开发者设置里的重置/清空）。
+  // 主题切换故意保留：它改的是这台设备的显示偏好（存在浏览器本地、跟随 <html data-theme>），
+  // 不属于"网页内容"，访客想调成深色看也不该被拦。
+  const { isGuest } = useGuest()
 
   // 关闭时退回第一级 —— 下次打开总是从首页开始，不会停在上次进过的二级页
   useEffect(() => {
@@ -174,10 +181,15 @@ export default function GeneralSettingsPanel({
                   每次进入「常用工具」时自动选中这个分组，省去手动切换。
                   改完在下次打开工具箱时生效。
                 </span>
+                {/* 默认分组是一条会写进本地设置的内容项，访客禁用。
+                    这里补一个 disabled:opacity-50：.field 本身没有禁用态样式，
+                    不加的话 select 变灰全靠浏览器默认，深浅主题下都不一样。 */}
                 <select
                   value={selected}
                   onChange={(event) => onChange('defaultCategory', event.target.value)}
-                  className="field field-boxed mt-2"
+                  disabled={isGuest}
+                  title={isGuest ? '访客预览模式不能修改' : undefined}
+                  className="field field-boxed mt-2 disabled:opacity-50"
                 >
                   <option value={ALL}>{ALL}（不筛选，显示所有工具）</option>
                   {groups.map((group) => (

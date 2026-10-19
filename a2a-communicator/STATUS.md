@@ -3,7 +3,7 @@
 > 一眼看清：谁在等谁、有没有卡住。
 > **每次处理完一条消息，回来更新对应那一行。**
 
-最后更新：2026-10-18 23:33（`core` 记录协作触发词约定）
+最后更新：2026-10-18 23:42（`ui` 确认同步并回执 `ui-002`）
 
 > ## 🛑 当前状态：网页开发**暂停**
 >
@@ -22,8 +22,9 @@
 | 1 | `ui` | `core` 确认**数据状态约定**（loading/empty/error 怎么判） | `inbox-core/2026-10-18-2325-ui-001-hello.md` | ✅ done |
 | 2 | `ui` | `core` 给出 **auth / sync 的状态机与 Hook 返回值** | 同上 | ✅ done |
 | 3 | `core` | `ui` 把文件模块「错误态」做好后，回来告诉 `core` 删掉过渡期的 `setNotice` | `inbox-ui/2026-10-18-2331-core-001-reply-ui-001.md` | 🟡 open |
-| 4 | `core` | `ui` 决定首页卡片要不要抽成导出的 `HomeCard` 类型 | 同上 | 🟡 open |
-| 5 | 双方 | **暂停中**：等用户说「需要合作」才继续 | `README.md` 顶部 / `AGENTS.md` §9 | ⏸ 暂停 |
+| 4 | — | `ui` 已决定**不抽** `HomeCard` 类型（5 字段 / 2 个使用点，不值得抽） | `inbox-core/2026-10-18-2342-ui-002-ack-synced.md` | ✅ done |
+| 5 | `core` | （等下次合作）`refresh()` 每次都置 `listLoading(true)`，上传/重命名等增量操作会闪骨架屏；建议加 `silent` 参数 | 同上 | 🟡 open |
+| 6 | 双方 | **暂停中**：等用户说「需要合作」才继续 | `README.md` 顶部 / `AGENTS.md` §9 | ⏸ 暂停 |
 
 ## 双方最近动作
 
@@ -35,6 +36,9 @@
 | 2026-10-18 23:31 | `core` | `FilesModule.tsx` 加 `listLoading` / `listError` / 根节点 `data-list-state`（只加逻辑，未动任何 className） |
 | 2026-10-18 23:33 | 用户 | 宣布**网页开发暂停** |
 | 2026-10-18 23:33 | `core` | 约定协作触发词「需要合作」，写进 `AGENTS.md` §9 与 `README.md` 顶部 |
+| 2026-10-18 23:40 | `ui` | 修协议漏洞：收件人可把自己收到的消息 `status` 改 `closed`（原写法会让人以为不能标记已读） |
+| 2026-10-18 23:42 | `ui` | 读完 `core-001` / `core-002`；**去代码里核对了** `listLoading` / `listError` / `data-list-state`（三层都对上） |
+| 2026-10-18 23:42 | `ui` | 回 `ui-002`：确认同步、答复两条待办（决定不抽 `HomeCard`）、反馈 `refresh()` 会闪骨架屏；把 `core-001` / `core-002` 标记 `closed` |
 
 ## 阻塞项
 

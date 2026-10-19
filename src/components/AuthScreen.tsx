@@ -16,6 +16,7 @@ import {
   validateUsername,
 } from '../lib/auth'
 import { useAuth } from '../hooks/useAuth'
+import { useGuest } from '../hooks/useGuest'
 
 // 两个标签。value 同时决定"当前是哪个表单"和"提交时调哪个函数"。
 const TABS = [
@@ -27,6 +28,10 @@ type Mode = (typeof TABS)[number]['value']
 
 export default function AuthScreen() {
   const { login, register, lastError } = useAuth()
+
+  // 访客入口。只取 enterGuest：这一屏不需要读 isGuest——
+  // 一旦进入访客模式，App 订阅到标记变化就把整屏换成主界面了，这里不必自己判断。
+  const { enterGuest } = useGuest()
 
   const [mode, setMode] = useState<Mode>('login')
   const [username, setUsername] = useState('')
@@ -199,6 +204,19 @@ export default function AuthScreen() {
             {submitting ? '请稍候…' : isRegister ? '注册并登录' : '登录'}
           </button>
         </form>
+
+        {/* 访客预览：不登录也能看看。
+            故意用 btn-text（纯文字按钮）而不是 btn-primary——
+            这一屏的主动作是"登录"，访客只是给好奇的人留的一条小路，不能抢主按钮的视线。
+            点下去只改全局的访客标记，App 订阅着它，会把这一屏换成主界面（和登录成功是同一条路）。 */}
+        <div className="mt-3 text-center">
+          <button type="button" onClick={enterGuest} className="btn btn-text">
+            👀 访客预览，先随便看看
+          </button>
+          <p className="mt-1 text-xs leading-relaxed text-fg-subtle">
+            不用登录，只能查看，不能修改。想改内容就登录。
+          </p>
+        </div>
 
         <p className="mt-4 text-center text-xs leading-relaxed text-fg-subtle">
           登录状态会记住 30 天。换账号或退出登录时，这台浏览器里缓存的工具数据会被清空

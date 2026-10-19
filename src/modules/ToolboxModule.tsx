@@ -36,6 +36,7 @@ import { useTools } from '../hooks/useTools'
 import { useDevSettings } from '../hooks/useDevSettings'
 import { useAppSettings } from '../hooks/useAppSettings'
 import { useTheme } from '../hooks/useTheme'
+import { useGuest } from '../hooks/useGuest'
 import SearchBar from '../components/SearchBar'
 import CategoryTabs from '../components/CategoryTabs'
 import ToolCard from '../components/ToolCard'
@@ -96,6 +97,10 @@ export default function ToolboxModule({ onBack, onSearch }: ToolboxModuleProps) 
   // ⚠️ 它改的是 <html> 上的 color-scheme，影响的是全站颜色，
   // 所以理论上放在任意组件里调用都行 —— 这里放在工具箱模块只是顺手。
   const { mode: themeMode, setTheme } = useTheme()
+
+  // ---- 访客（只读）模式 ----
+  // 只取 isGuest：这个模块里没有"进入/退出访客"的动作（入口在登录页、出口在顶部横幅）。
+  const { isGuest } = useGuest()
 
   // ---- 顺序：拖动调整后存到浏览器本地 ----
   const allIds = useMemo(() => tools.map((tool) => tool.id), [tools])
@@ -374,7 +379,14 @@ export default function ToolboxModule({ onBack, onSearch }: ToolboxModuleProps) 
             categories={categories}
             selected={category}
             onSelect={setCategory}
-            onOpenEditor={() => setEditorOpen(true)}
+            // 访客只读：「编辑分组」是整条写操作链的总入口 ——
+            // 弹窗里才是新建分组 / 新建工具 / 改名 / 删除。
+            // 那个按钮本身在 CategoryTabs 里，它不接受 disabled 属性，
+            // 所以这里从源头掐断：访客点下去不会再打开一个能改东西的界面。
+            onOpenEditor={() => {
+              if (isGuest) return
+              setEditorOpen(true)
+            }}
           />
 
           {/* 拖动提示 */}
@@ -409,8 +421,18 @@ export default function ToolboxModule({ onBack, onSearch }: ToolboxModuleProps) 
                       isFavorite={isFavorite(tool.id)}
                       onToggleFavorite={toggleFavorite}
                       onOpenDetail={setDetailToolId}
-                      onEdit={setEditingToolId}
-                      onDelete={removeTool}
+                      // 访客只读：卡片右下角「✎ 编辑」会打开保存/删除弹窗，
+                      // 「删除」更是直接改数据，所以这两个回调在访客下直接返回。
+                      // 按钮的 disabled 加不了（它在 ToolCard 里，那边没有这个属性），
+                      // 于是掐在"点了也不产生任何写入"这一层。
+                      onEdit={(id) => {
+                        if (isGuest) return
+                        setEditingToolId(id)
+                      }}
+                      onDelete={(id) => {
+                        if (isGuest) return
+                        removeTool(id)
+                      }}
                     />
                   </div>
                 ))}

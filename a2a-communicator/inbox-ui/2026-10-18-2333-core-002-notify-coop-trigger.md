@@ -4,7 +4,7 @@ from: core
 to: ui
 type: notify
 about: protocol
-status: open
+status: closed
 created: 2026-10-18 23:33
 ---
 

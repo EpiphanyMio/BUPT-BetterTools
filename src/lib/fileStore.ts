@@ -13,6 +13,8 @@
 // 为什么分成两张表：打开一个文件夹时只需要读 nodes，
 // 不用把所有文件的内容都读进内存 —— 否则文件夹里放几个大 PDF 就会卡。
 
+import { isGuest } from './guestMode'
+
 const DB_NAME = 'better-tools-files'
 const DB_VERSION = 1
 const NODES = 'nodes'
@@ -138,6 +140,11 @@ export async function getPath(folderId: string): Promise<FileNode[]> {
 }
 
 export async function createFolder(name: string, parentId: string): Promise<FileNode> {
+  // 访客预览是「只读」的：界面上的禁用只是提示，真正的保证在这一层。
+  // 下面每个写操作入口都先问一次 isGuest()。
+  // 这里选择**抛错**而不是静默 return —— 调用方已经 catch 并把 message 显示给用户，
+  // 抛错能让人明确知道"这次操作被拒绝了"，静默返回则会显得像是成功但看不到东西。
+  if (isGuest()) throw new Error('访客预览模式下不能修改文件')
   const now = Date.now()
   const node: FileNode = {
     id: createId('folder'),
@@ -163,6 +170,8 @@ export async function addFile(
   parentId: string,
   overrideName?: string,
 ): Promise<FileNode> {
+  // 访客只读：不许上传
+  if (isGuest()) throw new Error('访客预览模式下不能修改文件')
   const now = Date.now()
   const node: FileNode = {
     id: createId('file'),
@@ -185,6 +194,8 @@ export async function addFile(
 }
 
 export async function renameNode(id: string, name: string): Promise<void> {
+  // 访客只读：不许改名
+  if (isGuest()) throw new Error('访客预览模式下不能修改文件')
   const db = await openDb()
 
   const readTx = db.transaction(NODES, 'readonly')
@@ -222,11 +233,15 @@ function collectSubtree(all: FileNode[], roots: string[]): string[] {
 
 /** 删除一个文件或文件夹（连同里面的全部内容），返回实际删掉的条目数 */
 export async function deleteNode(id: string): Promise<number> {
+  // 访客只读：不许删
+  if (isGuest()) throw new Error('访客预览模式下不能修改文件')
   return deleteNodes([id])
 }
 
 /** 批量删除，返回实际删掉的条目数（含被连带删除的子孙） */
 export async function deleteNodes(ids: string[]): Promise<number> {
+  // 访客只读：删除是最危险的一个写操作（会连带删掉整个子树）
+  if (isGuest()) throw new Error('访客预览模式下不能修改文件')
   if (ids.length === 0) return 0
   const db = await openDb()
 
@@ -326,6 +341,8 @@ export async function moveNode(
   id: string,
   targetParentId: string,
 ): Promise<'ok' | 'same' | 'cycle'> {
+  // 访客只读：不许移动
+  if (isGuest()) throw new Error('访客预览模式下不能修改文件')
   const db = await openDb()
 
   const readTx = db.transaction(NODES, 'readonly')

@@ -6,6 +6,7 @@
 // 新增参数：在下面的 FIELDS 数组里加一行描述，界面上就会自动出现对应控件。
 
 import { useAuth } from '../hooks/useAuth'
+import { useGuest } from '../hooks/useGuest'
 import type { DevSettingKey, DevSettings } from '../hooks/useDevSettings'
 import InviteAdmin from './InviteAdmin'
 
@@ -73,8 +74,16 @@ export default function DevSettingsContent({
   // 邀请码区块对普通用户连渲染都不该发生。
   const { isAdmin } = useAuth()
 
+  // 访客（只读）模式：「参数恢复默认值」「清空本地数据」都会被拦掉。
+  // 清空数据尤其不能让访客点 —— 它删的是本机 localStorage 里这一整套数据。
+  const { isGuest } = useGuest()
+
   // 清空本工具在浏览器里保存的全部数据（调试时经常要用）
   function handleClearStorage() {
+    // 按钮已经 disabled 了，这里再挡一道：万一以后有人把禁用逻辑删掉，
+    // 真正删数据的动作仍然不会被执行。
+    if (isGuest) return
+
     const keys = Object.keys(localStorage).filter((key) =>
       key.startsWith('better-tools:'),
     )
@@ -120,10 +129,15 @@ export default function DevSettingsContent({
                       </span>
                     )}
                   </span>
+                  {/* 参数本身也是写操作（会存进 localStorage），访客禁用。
+                      数据层已经拦了 useDevSettings.updateSetting，
+                      这里不跟着禁的话，访客勾一下会立刻被弹回，看着像坏了。 */}
                   <input
                     type="checkbox"
                     checked={Boolean(value)}
                     onChange={(event) => onChange(field.key, event.target.checked)}
+                    disabled={isGuest}
+                    title={isGuest ? '访客预览模式不能修改' : undefined}
                     className="mt-1 check"
                   />
                 </label>
@@ -147,6 +161,8 @@ export default function DevSettingsContent({
                   max={field.max}
                   step={field.step}
                   onChange={(event) => onChange(field.key, Number(event.target.value))}
+                  disabled={isGuest}
+                  title={isGuest ? '访客预览模式不能修改' : undefined}
                   className="mt-1.5 w-28field"
                 />
               </div>
@@ -157,9 +173,13 @@ export default function DevSettingsContent({
 
       {/* ---- 操作 ---- */}
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-line-soft pt-4">
+        {/* 这两个都是写操作（会改本地数据），访客禁用。
+            禁用态样式由 .btn:disabled 统一提供，不用在这里另加类。 */}
         <button
           type="button"
           onClick={onReset}
+          disabled={isGuest}
+          title={isGuest ? '访客预览模式不能修改' : undefined}
           className="btn btn-outline"
         >
           参数恢复默认值
@@ -167,6 +187,8 @@ export default function DevSettingsContent({
         <button
           type="button"
           onClick={handleClearStorage}
+          disabled={isGuest}
+          title={isGuest ? '访客预览模式不能修改' : undefined}
           className="btn btn-danger"
         >
           清空本地数据
