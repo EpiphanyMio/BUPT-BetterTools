@@ -33,5 +33,19 @@
     // 没有它的时候，"找不到同名文件就回落到 index.html"这条规则会把 /api/snapshot 也吃掉，
     // 浏览器拿到的是一整页 HTML —— 前端 res.json() 只会抛一句看不懂的语法错误。
     "run_worker_first": ["/api/*"]
-  }
+  },
+  // R2 桶：存文件管理里的文件内容（目录树在 D1 的 file_nodes 表里）。
+  //
+  // ⚠️ 部署前**必须**先在 Cloudflare 上建好这个桶，否则 `wrangler deploy` 会直接失败
+  //    （线上会继续停在上一版，不会挂掉，但这次改动也就上不去）：
+  //      npx wrangler r2 bucket create bupt-bettertools-files
+  //    或者：Cloudflare 控制台 → R2 → Create bucket，名字填上面的 bucket_name。
+  //
+  // binding 名必须叫 FILES —— worker/index.ts 里用的是 env.FILES。
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "bupt-bettertools-files"
+    }
+  ]
 }

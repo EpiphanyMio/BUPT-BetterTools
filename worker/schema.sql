@@ -125,3 +125,57 @@ UPDATE OR IGNORE snapshot_v2
 DROP TABLE IF EXISTS snapshot;
 
 ALTER TABLE snapshot_v2 RENAME TO snapshot;
+
+-- ---------------------------------------------------------------- 文件管理（云端）
+--
+-- 为什么单独建表、不塞进上面那行 snapshot：
+--   ① 快照是整包覆盖，上限 256KB，几百个文件的目录树就塞不下了；
+--   ② 改一个文件名要重传整包，两台设备同时改还会互相覆盖。
+--   拆成「每人一批节点行」之后，每次只动自己那一行，冲突面小得多。
+--
+-- 文件内容**不在这里** —— 二进制存在 R2，key 是 u/{user_id}/{id}，
+-- 由 Worker 鉴权后读写（桶本身不公开）。这里只存名册。
+
+-- 目录树。parent_id 用空字符串表示根目录，和前端 FileNode.parentId 保持一致
+-- （不用 NULL：SQLite 里 NULL 不参与唯一/比较，前端还要到处判空，空串更省事）。
+--
+-- deleted 是「墓碑」而不是真删：一台设备离线删了文件，另一台设备下次拉树时
+-- 必须知道「这条没了」，否则会把它当成本地新增又传回来。墓碑长期保留（一行几十字节）。
+CREATE TABLE IF NOT EXISTS file_nodes (
+  user_id    INTEGER NOT NULL,
+  id         TEXT    NOT NULL,
+  parent_id  TEXT    NOT NULL DEFAULT '',
+  name       TEXT    NOT NULL,
+  kind       TEXT    NOT NULL,              -- 'folder' | 'file'
+  size       INTEGER NOT NULL DEFAULT 0,    -- 字节；文件夹恒为 0
+  mime       TEXT    NOT NULL DEFAULT '',
+  deleted    INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,              -- 服务端时间，客户端不参与赋值
+  PRIMARY KEY (user_id, id)
+);
+
+-- 列某个文件夹里的东西、按更新时间排序，都靠这个索引。
+CREATE INDEX IF NOT EXISTS file_nodes_parent ON file_nodes(user_id, parent_id);
+CREATE INDEX IF NOT EXISTS file_nodes_updated ON file_nodes(user_id, updated_at);
+
+-- 每人已用字节数。上传 / 删除时在这里加减，配额判断只看这一个数，
+-- 不用每次 SUM 一遍整棵树（SUM 在文件多了以后会越来越慢）。
+CREATE TABLE IF NOT EXISTS file_usage (
+  user_id    INTEGER PRIMARY KEY,
+  bytes      INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+-- 公开分享链接。token 是随机串本身，不存哈希 —— 它只是「读某一个文件」的钥匙，
+-- 泄露了也只影响那一个文件，而且随时可以撤销（revoked = 1）。
+-- expires_at 为 NULL 表示永久有效。
+CREATE TABLE IF NOT EXISTS file_shares (
+  token      TEXT    PRIMARY KEY,
+  user_id    INTEGER NOT NULL,
+  node_id    TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  revoked    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS file_shares_user ON file_shares(user_id, node_id);

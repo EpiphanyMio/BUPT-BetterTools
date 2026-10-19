@@ -58,12 +58,23 @@
 //   DELETE /api/invites/{code} 需管理员 → 204
 //   GET    /api/snapshot      需登录    → 200 { revision, updatedAt, data }
 //   PUT    /api/snapshot      需登录    → 200 | 409
+//   GET    /api/files/tree    需登录    → 200 { nodes }（含墓碑）
+//   POST   /api/files/nodes   需登录    → 200 { ok }（一次 ≤200 条）
+//   POST   /api/files/delete  需登录    → 200 { ok, deleted }
+//   GET    /api/files/usage   需登录    → 200 { used, quota }
+//   PUT    /api/files/content/{id}  需登录 → 200 { ok, size }
+//   GET    /api/files/content/{id}  需登录 → 二进制
+//   GET    /api/files/shares  需登录    → 200 { shares }
+//   POST   /api/files/shares  需登录    → 201 { token, nodeId, expiresAt }
+//   DELETE /api/files/shares/{token} 需登录 → 204
+//   GET    /api/share/{token} 无需鉴权  → 二进制（公开分享）
 //   其它 /api/*                        → 404 { error: "not-found" }
 //
 // 为什么把 /api/auth/* 放在最前面：注册和登录是**唯一**不需要令牌的接口，
 // 先按前缀分流，后面的处理函数就不用再考虑「这个请求可能还没身份」这件事。
 
-import type { D1Database } from './d1.ts'
+import type { D1Database, D1PreparedStatement } from './d1.ts'
+import type { R2Bucket } from './r2.ts'
 import {
   authenticate,
   createSession,
@@ -84,6 +95,14 @@ interface Fetcher {
 interface Env {
   DB: D1Database
   ASSETS: Fetcher
+  /**
+   * R2 桶：文件管理里文件的实际内容。
+   *
+   * 为什么是可选的：本地开发 / 旧配置里可能没有这个绑定。
+   * 缺了它时文件接口会明确回 503「云存储未配置」，而不是抛一个看不懂的异常 ——
+   * 工具清单、账号、快照这些功能完全不受影响。
+   */
+  FILES?: R2Bucket
   /**
    * v1 的共享令牌。v2 起**不再作为鉴权依据**，这里留着只是为了让
    * 老的 .dev.vars / 线上 secret 存在时不报错。别再把任何逻辑挂到它上面。
@@ -133,6 +152,68 @@ interface InviteRow {
   usedBy: string | null
 }
 
+/** 一条目录节点（含墓碑）。和前端 src/lib/fileCloud.ts 的 CloudNode 一一对应。 */
+interface CloudNode {
+  id: string
+  /** 根目录用空字符串表示，和前端 FileNode.parentId 一致 */
+  parentId: string
+  name: string
+  kind: 'file' | 'folder'
+  size: number
+  mime: string
+  deleted: boolean
+  updatedAt: number
+}
+
+/** 客户端推上来的节点：只有这些字段，deleted / updatedAt 由服务端决定，不接受客户端传。 */
+interface FileNodePayload {
+  id: string
+  parentId: string
+  name: string
+  kind: 'file' | 'folder'
+  size: number
+  mime: string
+}
+
+/** file_nodes 的查询行：列名用 AS 转成驼峰，省得下面每处都手写 snake→camel */
+interface CloudNodeRow {
+  id: string
+  parentId: string
+  name: string
+  kind: string
+  size: number
+  mime: string
+  deleted: number
+  updatedAt: number
+}
+
+interface CloudShare {
+  token: string
+  nodeId: string
+  name: string
+  createdAt: number
+  expiresAt: number | null
+}
+
+interface CloudShareRow {
+  token: string
+  nodeId: string
+  name: string
+  createdAt: number
+  expiresAt: number | null
+}
+
+/** 公开分享查出来的那一行：分享本身 + 节点元数据（节点可能已经不在了，所以字段可空） */
+interface PublicShareRow {
+  nodeId: string
+  userId: number
+  expiresAt: number | null
+  revoked: number
+  name: string | null
+  mime: string | null
+  deleted: number | null
+}
+
 // ---------------------------------------------------------------- 常量
 
 // 请求体上限 256KB、工具最多 500 条：与前端 src/lib/sync.ts 里的 MAX_PAYLOAD_BYTES /
@@ -149,6 +230,61 @@ const INVITE_CLAIM_LEASE_MS = 2 * 60 * 1000
 const INVITE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 const INVITE_LENGTH = 12
 const INVITE_CODE_RE = /^[A-Za-z0-9-]{6,32}$/
+
+// ---------------------------------------------------------------- 文件管理常量
+//
+// MAX_FILE_BYTES / USER_QUOTA_BYTES 与前端 src/lib/fileCloud.ts 里的同名常量保持一致
+// （契约第二节）。和 MAX_BODY_BYTES 一样两边各拦一次：前端拦是为了省一次白跑的请求，
+// 后端拦是因为**不能信任客户端** —— 绕过网页直接 curl 一样能打这些接口。
+const MAX_FILE_BYTES = 50 * 1024 * 1024
+const USER_QUOTA_BYTES = 500 * 1024 * 1024
+
+// 一次请求最多带多少个节点 / 删除多少个 id。拖 200 个文件进来已经是极端情况，
+// 再大就不该靠一次请求：D1 的 batch 语句越多，一次失败重试的成本越高。
+const MAX_FILE_BATCH = 200
+
+// 目录树一次最多拉 5000 行（契约第二节）。这个上限是给客户端内存兜底的：
+// 整棵树是一次性 JSON 返回的，行数再多，首屏同步的响应体就会大到没法接受。
+const MAX_TREE_ROWS = 5000
+
+// 节点 id 由前端生成（'file-' / 'folder-' + crypto.randomUUID()）。
+// 这里只放行字母、数字、下划线、连字符：它同时会被拼进 R2 的 key（u/{userId}/{nodeId}），
+// 一旦允许 '/' 或 '..'，key 就能被引到别人的前缀下面。校验比前端实际生成的格式更严，
+// 换来的是「R2 key 永远落在本用户目录里」这条不变量。
+const NODE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+
+// 文件名只卡长度和「会破坏界面 / 响应头」的字符：
+// 换行等控制字符会污染 Content-Disposition，斜杠会被前端当成路径分隔符。
+const FILE_NAME_RE = /^[^\u0000-\u001f\u007f/\\]{1,255}$/
+const MIME_MAX = 200
+// 归一化之后的基础 MIME 类型；空串也表示「未知类型」，下载时按 octet-stream 处理。
+const MIME_RE = /^$|^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
+
+// 只有这些类型允许浏览器**内联打开**（inline），其余一律 application/octet-stream +
+// attachment 强制下载。原因：/api 和页面同源，一个 .html 或 .svg 传上来再被 inline 打开，
+// 里面的脚本就等于在站点自己的源上执行了 —— 这是最直接的 XSS 入口。
+// svg 不在白名单里也是同一个理由（SVG 里能写 <script>）。
+const INLINE_MIME_TYPES = new Set([
+  'application/pdf',
+  'text/plain',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/bmp',
+  'audio/mpeg',
+  'audio/ogg',
+  'audio/wav',
+  'audio/mp4',
+  'video/mp4',
+  'video/webm',
+])
+
+// 分享 token：16 字节随机数转 32 位小写 hex（128 位，猜不出来）。
+// 只含 [0-9a-f]，放进 URL 不需要转义；库里存的也是它本身（见 schema.sql 的说明）。
+const SHARE_TOKEN_BYTES = 16
+const SHARE_TOKEN_RE = /^[a-f0-9]{32}$/
 
 // 所有 JSON 响应共用。cache-control: no-store 很重要：
 // GET /api/snapshot 一旦被浏览器或 CDN 缓存住，客户端读到的 revision 会一直停在旧值，
@@ -759,6 +895,682 @@ async function handlePutSnapshot(request: Request, env: Env): Promise<Response> 
   return json({ revision: baseRevision + 1, updatedAt: now })
 }
 
+// ---------------------------------------------------------------- 文件管理（云端）
+//
+// 数据分两处存：文件内容进 R2（key = u/{userId}/{nodeId}），目录树进 D1 的
+// file_nodes / file_usage / file_shares（见 worker/schema.sql）。
+// 为什么不塞进上面那个 snapshot：快照是整包覆盖、上限 256KB，几百个文件的目录树就装不下；
+// 而且改一个文件名要重传整包，两台设备同时改必然互相覆盖。拆成「每人一批节点行」之后，
+// 每次只动自己那一行，冲突面小得多。
+//
+// 这段代码里所有文件接口的共同要求：
+//   ① **先鉴权再碰 body**：上传接口的 body 可能是 50MB，没身份就不该开始收流。
+//   ② 每条查询都带 user_id：跨账号一律 404（而不是 403），不让人拿 id 探测别人有没有这个文件。
+//   ③ 内容下载一律 nosniff；只有白名单类型允许 inline，其余强制 attachment（防 XSS）。
+//   ④ R2 绑定可能不存在（本地开发 / 旧配置），缺了就回 503 storage-not-configured，
+//      而不是抛异常把整个 Worker 打挂 —— 工具清单、账号、快照这些功能不该受牵连。
+
+/** 类型白名单之外的东西：改 MIME 参数、转小写，只留基础类型 */
+function normalizeMime(raw: string): string {
+  // 只取第一个分号之前的部分（'text/plain;charset=utf-8' → 'text/plain'）。
+  // 不写完整的 MIME 解析器：白名单比较只需要基础类型。
+  return raw.split(';')[0].trim().toLowerCase()
+}
+
+/** R2 里的 key。带上 userId 的好处：将来「按用户清理」不用扫全桶，也不会和别人撞 key。 */
+function fileKey(userId: number, nodeId: string): string {
+  return 'u/' + userId + '/' + nodeId
+}
+
+/** D1 不支持数组展开成占位符，只能按个数自己拼 '(?, ?, ?)' */
+function placeholders(count: number): string {
+  return new Array(count).fill('?').join(', ')
+}
+
+// D1 单条 SQL 最多 100 个绑定参数（官方限制，超了整个请求直接报错）。
+// 删除一次最多 200 个 id，IN 列表必须切开：80 个 id + user_id（+ now）也还在 100 以内。
+const MAX_IN_PARAMS = 80
+
+/** 把 id 列表切成若干块，配合 IN (...) 使用 */
+function chunkIds(ids: string[], size: number): string[][] {
+  const chunks: string[][] = []
+  for (let i = 0; i < ids.length; i += size) chunks.push(ids.slice(i, i + size))
+  return chunks
+}
+
+/** 从路径里取出并校验 id；格式不对当作「这条路径不存在」 */
+function readPathId(path: string, prefix: string): string | null {
+  let raw = ''
+  try {
+    // 路径里的 id 可能被 URL 编码过（%2D 之类），先解回来再判断
+    raw = decodeURIComponent(path.slice(prefix.length))
+  } catch {
+    return null
+  }
+  return NODE_ID_RE.test(raw) ? raw : null
+}
+
+function storageNotConfigured(): Response {
+  return json({ error: 'storage-not-configured', message: '云存储未配置（缺少 R2 绑定）' }, 503)
+}
+
+function lengthRequired(): Response {
+  return json({ error: 'length-required', message: '上传必须带 Content-Length 头' }, 411)
+}
+
+function payloadTooLarge(): Response {
+  return json({ error: 'payload-too-large', message: '单个文件不能超过 50 MB' }, 413)
+}
+
+function quotaExceeded(): Response {
+  return json({ error: 'quota-exceeded', message: '账号空间不足（上限 500 MB）' }, 413)
+}
+
+/**
+ * 把文件名编码成 Content-Disposition 里 filename* 的值。
+ *
+ * 标准写法是 RFC 5987 的 ext-value（`UTF-8''<百分号编码>`），但 encodeURIComponent
+ * 会原样留下 ' ( ) * —— 这几个字符不在 attr-char 允许集里，遇到严格实现的浏览器
+ * 可能把文件名解析错。这里把它们补编码掉，其余交给 encodeURIComponent。
+ * 名字本身已经在校验里排除了控制字符，所以这里不存在往响应头里注入换行的可能。
+ */
+function encodeHeaderFilename(name: string): string {
+  return encodeURIComponent(name).replace(/['()*]/g, (char) => '%' + char.charCodeAt(0).toString(16).toUpperCase())
+}
+
+/**
+ * 下载响应的公共头：类型白名单决定 inline / attachment。
+ *
+ * 为什么白名单在**响应**这一侧判，而不是上传时就把类型改掉：
+ * 库里的 mime 是客户端写的，任何时候都不能直接信；每次返回前重新过一遍白名单，
+ * 才能保证「以后新增一种危险类型」不会从旧数据里漏出来。
+ */
+function downloadHeaders(mime: string, name: string): Record<string, string> {
+  const base = normalizeMime(mime)
+  const inline = base !== '' && INLINE_MIME_TYPES.has(base)
+  return {
+    'content-type': inline ? base : 'application/octet-stream',
+    // 中文文件名走 RFC 5987 的 filename* 形式；filename="download" 是给老浏览器的兜底。
+    // 不用原名做 ASCII 回退：原名里可能有引号、分号，拼进头里就变成注入点了。
+    'content-disposition': (inline ? 'inline' : 'attachment') + '; filename="download"; filename*=UTF-8\'\'' + encodeHeaderFilename(name),
+    // 不管什么类型都加 nosniff：禁止浏览器把 octet-stream 猜成 HTML。
+    'x-content-type-options': 'nosniff',
+    // 文件内容只属于某个账号或某个分享，不放进任何共享缓存
+    'cache-control': 'no-store',
+  }
+}
+
+/** 读用户已用字节数；没有记录就是 0（从没上传过） */
+async function readUsedBytes(db: D1Database, userId: number): Promise<number> {
+  const row = await db.prepare('SELECT bytes AS bytes FROM file_usage WHERE user_id = ?').bind(userId).first<{ bytes: number }>()
+  return row ? Math.max(0, Number(row.bytes)) : 0
+}
+
+/**
+ * 生成一条「改用量」的语句（delta 可正可负）。
+ *
+ * 用 INSERT ... ON CONFLICT 一条语句同时覆盖两种情况：第一次上传时插入，
+ * 之后在原值上累加。MAX(0, ...) 是删除侧的保护：库里的计数和实际文件万一错位，
+ * 也不该出现负数（负的 used 会让配额检查永远通过）。
+ */
+function usageStatement(db: D1Database, userId: number, delta: number, now: number): D1PreparedStatement {
+  return db
+    .prepare(
+      'INSERT INTO file_usage (user_id, bytes, updated_at) VALUES (?, ?, ?) ' +
+        'ON CONFLICT(user_id) DO UPDATE SET bytes = MAX(0, file_usage.bytes + ?), updated_at = excluded.updated_at',
+    )
+    .bind(userId, Math.max(0, delta), now, delta)
+}
+
+/**
+ * 取 R2 put 返回对象里的真实字节数。
+ *
+ * worker/r2.ts 把返回值写成了 unknown（用不到别的字段，不值得为一个类型拉 workers-types），
+ * 这里就地收窄。为什么不用客户端的 Content-Length 了事：长度头可以撒谎，
+ * 而配额和库里的 size 都该按真实字节算。
+ */
+function readR2ObjectSize(result: unknown, fallback: number): number {
+  if (typeof result === 'object' && result !== null && 'size' in result) {
+    const size = (result as { size?: unknown }).size
+    if (typeof size === 'number' && Number.isFinite(size) && size >= 0) return size
+  }
+  return fallback
+}
+
+/** 校验一条客户端推上来的节点。deleted / updatedAt 不接受客户端传（墓碑只能由删除接口写）。 */
+function readFileNode(raw: unknown, index: number): Validated<FileNodePayload> {
+  const where = 'nodes[' + index + ']'
+  if (!isRecord(raw)) return { ok: false, message: where + ' 不是一个对象' }
+
+  const id = raw.id
+  if (typeof id !== 'string' || !NODE_ID_RE.test(id)) {
+    return { ok: false, message: where + '.id 不合法（只允许字母、数字、下划线、连字符，1-64 位）' }
+  }
+
+  const parentId = readTextField(raw, 'parentId')
+  if (parentId === null) return { ok: false, message: where + '.parentId 必须是字符串' }
+  if (parentId !== '' && !NODE_ID_RE.test(parentId)) {
+    return { ok: false, message: where + '.parentId 不合法（空串表示根目录）' }
+  }
+  if (parentId === id) return { ok: false, message: where + ' 不能以自己为父目录' }
+
+  const name = readTextField(raw, 'name')
+  if (name === null) return { ok: false, message: where + '.name 必须是字符串' }
+  // trim 之后为空的名字在界面上就是一个看不见的条目，直接拒收
+  if (name.trim() === '' || !FILE_NAME_RE.test(name)) {
+    return { ok: false, message: where + '.name 不合法（1-255 位，不能含斜杠或控制字符）' }
+  }
+
+  const kind = raw.kind
+  if (kind !== 'file' && kind !== 'folder') return { ok: false, message: where + '.kind 只能是 file 或 folder' }
+
+  const size = raw.size
+  if (typeof size !== 'number' || !Number.isInteger(size) || size < 0 || size > MAX_FILE_BYTES) {
+    return { ok: false, message: where + '.size 必须是 0 到 ' + MAX_FILE_BYTES + ' 之间的整数' }
+  }
+
+  const rawMime = readTextField(raw, 'mime')
+  if (rawMime === null) return { ok: false, message: where + '.mime 必须是字符串' }
+  const mime = normalizeMime(rawMime)
+  if (mime.length > MIME_MAX || !MIME_RE.test(mime)) {
+    return { ok: false, message: where + '.mime 不是合法的 MIME 类型' }
+  }
+
+  // 文件夹的大小恒为 0（schema 里也是这么注释的）：前端传什么都归零，
+  // 免得一条「文件夹占 3MB」的脏数据把用量算歪。
+  return { ok: true, value: { id, parentId, name, kind, size: kind === 'folder' ? 0 : size, mime } }
+}
+
+/** 校验 POST /api/files/nodes 的整个请求体 */
+function readFileNodes(raw: unknown): Validated<FileNodePayload[]> {
+  if (!isRecord(raw)) return { ok: false, message: '请求体必须是一个 JSON 对象' }
+
+  const list = raw.nodes
+  if (!Array.isArray(list)) return { ok: false, message: 'nodes 必须是数组' }
+  if (list.length > MAX_FILE_BATCH) {
+    return { ok: false, message: '一次最多推送 ' + MAX_FILE_BATCH + ' 个节点，这次有 ' + list.length + ' 个' }
+  }
+
+  const out: FileNodePayload[] = []
+  for (let i = 0; i < list.length; i += 1) {
+    const node = readFileNode(list[i], i)
+    if (!node.ok) return node
+    out.push(node.value)
+  }
+  return { ok: true, value: out }
+}
+
+/** 校验 POST /api/files/delete 的 { ids }，顺手去重（删整棵子树时父子 id 都会在列表里） */
+function readDeleteIds(raw: unknown): Validated<string[]> {
+  if (!isRecord(raw)) return { ok: false, message: '请求体必须是一个 JSON 对象' }
+
+  const list = raw.ids
+  if (!Array.isArray(list)) return { ok: false, message: 'ids 必须是数组' }
+  if (list.length > MAX_FILE_BATCH) {
+    return { ok: false, message: '一次最多删除 ' + MAX_FILE_BATCH + ' 个节点，这次有 ' + list.length + ' 个' }
+  }
+
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (let i = 0; i < list.length; i += 1) {
+    const id = list[i]
+    if (typeof id !== 'string' || !NODE_ID_RE.test(id)) {
+      return { ok: false, message: 'ids[' + i + '] 不合法' }
+    }
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+  }
+  return { ok: true, value: out }
+}
+
+/** 生成 32 位 hex 分享 token（每字节两位 hex） */
+function generateShareToken(): string {
+  const bytes = new Uint8Array(SHARE_TOKEN_BYTES)
+  crypto.getRandomValues(bytes)
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 1) {
+    out += bytes[i].toString(16).padStart(2, '0')
+  }
+  return out
+}
+
+/**
+ * GET /api/files/tree —— 拉当前用户的完整目录树。
+ *
+ * 墓碑（deleted = 1）也要返回：另一台设备删掉的东西，本机下次拉树时必须知道
+ * 「它没了」，否则会把本地那份当成本地新增又传回来，删了又活。
+ */
+async function handleFileTree(request: Request, env: Env): Promise<Response> {
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  const rows = await env.DB
+    .prepare(
+      'SELECT id AS id, parent_id AS parentId, name AS name, kind AS kind, size AS size, mime AS mime, deleted AS deleted, updated_at AS updatedAt ' +
+        // 按更新时间倒序取最新的 5000 行：真的超过上限时，最近改动（以及新传的文件）
+        // 不能掉在截断线外，否则表现成「新文件同步不上」。超限本身是契约给定的事实。
+        'FROM file_nodes WHERE user_id = ? ORDER BY updated_at DESC, id ASC LIMIT ?',
+    )
+    .bind(identity.user.id, MAX_TREE_ROWS)
+    .all<CloudNodeRow>()
+
+  const nodes: CloudNode[] = rows.results.map((row) => ({
+    id: row.id,
+    parentId: row.parentId,
+    name: row.name,
+    kind: row.kind === 'folder' ? 'folder' : 'file',
+    size: Number(row.size),
+    mime: row.mime,
+    deleted: Number(row.deleted) === 1,
+    updatedAt: Number(row.updatedAt),
+  }))
+  return json({ nodes })
+}
+
+/**
+ * POST /api/files/nodes —— 批量推送节点（新建 / 改名 / 移动都走这条）。
+ *
+ * 冲突时**不更新 size**：size 只由内容上传接口写。客户端在上传内容之前
+ * 只能报一个自己猜的大小，如果这里也改 size，客户端就可以用一条节点请求
+ * 随便改大小（谎报 / 抵消配额），而内容其实没传。
+ *
+ * updated_at 一律用服务端 Date.now()：两台设备的时钟不可比，客户端传时间戳
+ * 只会让「谁更新」变得不可判断。
+ *
+ * 冲突时把 deleted 置回 0：一条节点请求的语义就是「这一条现在是活的」。
+ * 墓碑只用来告诉**别的设备**「它没了」；如果本机还有 pending 的改名 / 移动操作，
+ * 按「本地改动优先」的约定就该把它重新顶成活的，而不是让客户端永远删不掉。
+ */
+async function handlePushNodes(request: Request, env: Env): Promise<Response> {
+  // ① 先鉴权，再读 body
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  const payload = await readJson(request)
+  if (!payload.ok) return payload.response
+  const parsed = readFileNodes(payload.value)
+  if (!parsed.ok) return badRequest(parsed.message)
+  const nodes = parsed.value
+  if (nodes.length === 0) return json({ ok: true })
+
+  const db = env.DB
+  const userId = identity.user.id
+  const now = Date.now()
+
+  // 一次 batch 提交：要么整批都进库，要么一条都不进，不会留下半批数据。
+  // ON CONFLICT 的 DO UPDATE 里故意没有 size —— 见上面函数注释。
+  const statements = nodes.map((node) =>
+    db
+      .prepare(
+        'INSERT INTO file_nodes (user_id, id, parent_id, name, kind, size, mime, deleted, updated_at) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?) ' +
+          'ON CONFLICT(user_id, id) DO UPDATE SET ' +
+          'parent_id = excluded.parent_id, name = excluded.name, kind = excluded.kind, ' +
+          'mime = excluded.mime, deleted = 0, updated_at = excluded.updated_at',
+      )
+      .bind(userId, node.id, node.parentId, node.name, node.kind, node.size, node.mime, now),
+  )
+  await db.batch(statements)
+  return json({ ok: true })
+}
+
+/**
+ * POST /api/files/delete —— 删一批节点（客户端会把整棵子树的 id 一起发上来）。
+ *
+ * 删除不是真删，而是「墓碑 + 撤销分享 + 删 R2 对象 + 配额减回去」：
+ *   ① 墓碑让别的设备下次拉树时知道这条没了；
+ *   ② 分享链接必须一起撤销，否则删掉的文件还能被公开链接读到；
+ *   ③ R2 对象要删，不然内容会一直占着桶；
+ *   ④ 配额按实际删掉的字节减回去（MAX(0, bytes - n)），否则删完再传会撞配额上限。
+ */
+async function handleDeleteFiles(request: Request, env: Env): Promise<Response> {
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  const payload = await readJson(request)
+  if (!payload.ok) return payload.response
+  const parsed = readDeleteIds(payload.value)
+  if (!parsed.ok) return badRequest(parsed.message)
+  const ids = parsed.value
+  if (ids.length === 0) return json({ ok: true, deleted: 0 })
+
+  const db = env.DB
+  const userId = identity.user.id
+
+  // 先查这一批里**还活着**的节点：不存在的 id（已经删过）不该重复减配额，
+  // 也不该出现在 deleted 计数里。按 MAX_IN_PARAMS 分块查，避开 D1 的参数上限。
+  const alive: { id: string; kind: string; size: number }[] = []
+  for (const chunk of chunkIds(ids, MAX_IN_PARAMS)) {
+    const rows = await db
+      .prepare(
+        'SELECT id AS id, kind AS kind, size AS size FROM file_nodes ' +
+          'WHERE user_id = ? AND deleted = 0 AND id IN (' + placeholders(chunk.length) + ')',
+      )
+      .bind(userId, ...chunk)
+      .all<{ id: string; kind: string; size: number }>()
+    alive.push(...rows.results)
+  }
+
+  const now = Date.now()
+  const statements: D1PreparedStatement[] = []
+  const fileIds: string[] = []
+  let freedBytes = 0
+  for (const row of alive) {
+    if (row.kind !== 'file') continue
+    fileIds.push(row.id)
+    // 退多少字节以 R2 对象的真实大小为准，而不是库里的 size：
+    // 库里的 size 可能是客户端在内容传上来之前报的「猜测值」，
+    // 拿它减会让配额越删越少（减多了还会把别的文件的空间一起吃掉）。
+    try {
+      const meta = env.FILES ? await env.FILES.head(fileKey(userId, row.id)) : null
+      freedBytes += meta ? Math.max(0, meta.size) : 0
+    } catch (error) {
+      // 读不到元数据就退回库里的大小：宁可少退一点，也不能让 quota 卡死
+      console.error('[bettertools] 读 R2 对象大小失败：', row.id, error)
+      freedBytes += Math.max(0, Number(row.size))
+    }
+  }
+
+  // 墓碑按块一条 UPDATE 写完（同一块里的 updated_at 用同一个 now，本来也该一样）：
+  // 200 个 id 就是 3 条语句，而不是 200 条，batch 的体积小得多。
+  for (const chunk of chunkIds(alive.map((row) => row.id), MAX_IN_PARAMS)) {
+    statements.push(
+      db
+        .prepare(
+          'UPDATE file_nodes SET deleted = 1, updated_at = ? ' +
+            'WHERE user_id = ? AND deleted = 0 AND id IN (' + placeholders(chunk.length) + ')',
+        )
+        .bind(now, userId, ...chunk),
+    )
+  }
+
+  // 撤分享对**请求里的所有 id** 都做（不只看活着的）：万一库里的状态曾经错位过，
+  // 这一步也能把残留的公开链接一并关掉。和写墓碑放在同一个 batch 里，
+  // 避免出现「墓碑写了、分享还没撤」的中间态。
+  for (const chunk of chunkIds(ids, MAX_IN_PARAMS)) {
+    statements.push(
+      db
+        .prepare(
+          'UPDATE file_shares SET revoked = 1 ' +
+            'WHERE user_id = ? AND revoked = 0 AND node_id IN (' + placeholders(chunk.length) + ')',
+        )
+        .bind(userId, ...chunk),
+    )
+  }
+  if (freedBytes > 0) statements.push(usageStatement(db, userId, -freedBytes, now))
+
+  // ids 非空时这里至少有「撤分享」的语句，batch 不会是空数组
+  await db.batch(statements)
+
+  // R2 的删除放在 D1 提交之后：墓碑已经生效，即使这里失败也只是留一个读不到的
+  // 垃圾对象；反过来先删 R2 再写墓碑，中途失败就会出现「目录里还在、内容没了」。
+  // 单条失败只记日志、不把整个请求判失败 —— 否则客户端会重试，而墓碑已经写过了。
+  const bucket = env.FILES
+  if (bucket) {
+    await Promise.all(
+      fileIds.map(async (id) => {
+        try {
+          await bucket.delete(fileKey(userId, id))
+        } catch (error) {
+          console.error('[bettertools] 删除 R2 对象失败：', id, error)
+        }
+      }),
+    )
+  }
+
+  return json({ ok: true, deleted: alive.length })
+}
+
+/**
+ * PUT /api/files/content/{id} —— 上传（或重传）文件内容。
+ *
+ * 检查顺序是有意的：鉴权 → R2 绑定 → Content-Length → 节点归属 → 配额 → 才收流。
+ * 每一步都在「开始收 50MB 数据」之前完成，避免替一个注定失败的请求白干活。
+ *
+ * 配额按 **delta**（新长度 - 旧 size）算，而不是「新长度直接加上去」：
+ * 重传同一个文件时旧大小已经算在 used 里了，只该补差额；换成一个更小的文件时
+ * delta 是负数，对应地会把空间退回去。
+ */
+async function handlePutFileContent(request: Request, env: Env, nodeId: string): Promise<Response> {
+  // ① 先鉴权：没身份就不该让我们开始收流
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  const bucket = env.FILES
+  if (!bucket) return storageNotConfigured()
+
+  // ② Content-Length 必须有：没有它就没法在上传前判断大小，
+  //    等收完 50MB 再说「太大」等于白烧一次 Worker 的内存和流量。
+  //    注意不能写成 Number(header ?? '')：Number('') === 0，缺头会被误当成空文件。
+  const rawLength = request.headers.get('content-length')
+  if (rawLength === null) return lengthRequired()
+  const declared = Number(rawLength)
+  if (!Number.isInteger(declared) || declared < 0) return badRequest('Content-Length 不合法')
+  if (declared > MAX_FILE_BYTES) return payloadTooLarge()
+
+  const db = env.DB
+  const userId = identity.user.id
+
+  // ③ 跨账号 / 已删除 / 文件夹一律 404：不区分「不存在」和「不是你的」，
+  //    避免这个接口变成探测别人 node id 是否存在的工具。
+  const node = await db
+    .prepare('SELECT kind AS kind, mime AS mime FROM file_nodes WHERE user_id = ? AND id = ? AND deleted = 0')
+    .bind(userId, nodeId)
+    .first<{ kind: string; mime: string }>()
+  if (!node || node.kind !== 'file') return json({ error: 'not-found' }, 404)
+
+  const now = Date.now()
+  const key = fileKey(userId, nodeId)
+
+  // 旧内容占了多少字节，以 R2 里的对象为准 —— **不能信库里的 node.size**：
+  // 客户端在传内容之前会先推一份「猜测的大小」用于列表显示，拿它算 delta 的话，
+  // 第一次上传会得到负的增量，配额永远记成 0（库里的 size 和实际占用会脱节）。
+  const existing = await bucket.head(key)
+  const oldSize = existing ? Math.max(0, existing.size) : 0
+
+  const used = await readUsedBytes(db, userId)
+  if (declared - oldSize > 0 && used + (declared - oldSize) > USER_QUOTA_BYTES) return quotaExceeded()
+
+  // request.body 是 ReadableStream，直接交给 R2：50MB 的文件不会在 Worker 内存里堆成一整块。
+  const written = await bucket.put(key, request.body ?? new ArrayBuffer(0), {
+    httpMetadata: { contentType: normalizeMime(node.mime) || 'application/octet-stream' },
+  })
+
+  // ④ 再按 R2 记的真实大小复核一次：Content-Length 可以撒谎（声明 1KB 实际 40MB）。
+  //    走到这里说明客户端在骗人，宁可把这对象删掉、让这次上传失败，也不能让配额被绕过。
+  const storedSize = readR2ObjectSize(written, declared)
+  if (storedSize > MAX_FILE_BYTES) {
+    await bucket.delete(key).catch(() => {})
+    return payloadTooLarge()
+  }
+  const delta = storedSize - oldSize
+  if (delta > 0 && used + delta > USER_QUOTA_BYTES) {
+    await bucket.delete(key).catch(() => {})
+    return quotaExceeded()
+  }
+
+  // ⑤ 节点大小和用量在同一个 batch 里更新，不会出现「大小写进去了、用量没加」的错位。
+  await db.batch([
+    db
+      .prepare('UPDATE file_nodes SET size = ?, updated_at = ? WHERE user_id = ? AND id = ? AND deleted = 0')
+      .bind(storedSize, now, userId, nodeId),
+    usageStatement(db, userId, delta, now),
+  ])
+
+  return json({ ok: true, size: storedSize })
+}
+
+/** GET /api/files/content/{id} —— 私有下载，只有文件所属账号能读 */
+async function handleGetFileContent(request: Request, env: Env, nodeId: string): Promise<Response> {
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  const bucket = env.FILES
+  if (!bucket) return storageNotConfigured()
+
+  const userId = identity.user.id
+  const node = await env.DB
+    .prepare('SELECT name AS name, mime AS mime FROM file_nodes WHERE user_id = ? AND id = ? AND deleted = 0 AND kind = ?')
+    .bind(userId, nodeId, 'file')
+    .first<{ name: string; mime: string }>()
+  if (!node) return json({ error: 'not-found' }, 404)
+
+  const object = await bucket.get(fileKey(userId, nodeId))
+  // 目录里有这条、R2 里没有（内容还没传上来 / 传失败了）也按 404 处理：
+  // 「元数据存在但内容没有」对客户端来说就是「这个文件读不到」，没必要发明第四种状态。
+  if (!object) return json({ error: 'not-found' }, 404)
+
+  return new Response(object.body, { headers: downloadHeaders(node.mime, node.name) })
+}
+
+/** GET /api/files/usage —— 当前账号已用 / 总配额 */
+async function handleFileUsage(request: Request, env: Env): Promise<Response> {
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+  const used = await readUsedBytes(env.DB, identity.user.id)
+  return json({ used, quota: USER_QUOTA_BYTES })
+}
+
+/** GET /api/files/shares —— 当前账号仍然有效的分享链接 */
+async function handleListShares(request: Request, env: Env): Promise<Response> {
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  const now = Date.now()
+  // 用 JOIN 而不是 LEFT JOIN：节点行没了（理论上不会，删除只写墓碑）这条分享也不该出现。
+  // 已撤销、已过期、节点已墓碑的一律过滤掉 —— 列表要展示的是「现在点开还能用的链接」。
+  const rows = await env.DB
+    .prepare(
+      'SELECT s.token AS token, s.node_id AS nodeId, n.name AS name, s.created_at AS createdAt, s.expires_at AS expiresAt ' +
+        'FROM file_shares s JOIN file_nodes n ON n.user_id = s.user_id AND n.id = s.node_id ' +
+        'WHERE s.user_id = ? AND s.revoked = 0 AND n.deleted = 0 AND (s.expires_at IS NULL OR s.expires_at > ?) ' +
+        'ORDER BY s.created_at DESC, s.token ASC',
+    )
+    .bind(identity.user.id, now)
+    .all<CloudShareRow>()
+
+  const shares: CloudShare[] = rows.results.map((row) => ({
+    token: row.token,
+    nodeId: row.nodeId,
+    name: row.name,
+    createdAt: Number(row.createdAt),
+    expiresAt: row.expiresAt === null ? null : Number(row.expiresAt),
+  }))
+  return json({ shares })
+}
+
+/**
+ * POST /api/files/shares —— 给某个文件生成公开分享链接。
+ *
+ * 同一个文件允许存在多条链接（各自独立撤销）：契约里 UI 是「列表里没有才创建」，
+ * 正常流程不会重复建；真并发建出两条也不是错误，少一条「隐式撤销别人刚建的链接」的惊喜。
+ */
+async function handleCreateShare(request: Request, env: Env): Promise<Response> {
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  const payload = await readJson(request)
+  if (!payload.ok) return payload.response
+  if (!isRecord(payload.value)) return badRequest('请求体必须是一个 JSON 对象')
+
+  const rawNodeId = payload.value.nodeId
+  if (typeof rawNodeId !== 'string' || !NODE_ID_RE.test(rawNodeId)) return badRequest('nodeId 不合法')
+
+  const now = Date.now()
+  const rawExpires = payload.value.expiresAt
+  let expiresAt: number | null = null
+  if (rawExpires !== undefined && rawExpires !== null) {
+    if (typeof rawExpires !== 'number' || !Number.isInteger(rawExpires)) {
+      return badRequest('expiresAt 必须是毫秒时间戳或 null')
+    }
+    // 过期的分享建出来就是死链，不如当场拒绝 —— 客户端多半是时间算错了
+    if (rawExpires <= now) return badRequest('expiresAt 必须晚于当前时间')
+    expiresAt = rawExpires
+  }
+
+  const userId = identity.user.id
+  const db = env.DB
+  // 只能分享自己的、活着的**文件**（文件夹没有内容可分享）
+  const node = await db
+    .prepare('SELECT 1 AS x FROM file_nodes WHERE user_id = ? AND id = ? AND deleted = 0 AND kind = ?')
+    .bind(userId, rawNodeId, 'file')
+    .first<{ x: number }>()
+  if (!node) return json({ error: 'not-found' }, 404)
+
+  // token 撞车概率是 1 / 2^128，但「极低」不等于「没有」：INSERT OR IGNORE + changes
+  // 判断让撞车变成「换一个再试」，而不是 500（和邀请码生成同一个套路）。
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const token = generateShareToken()
+    const inserted = await db
+      .prepare(
+        'INSERT OR IGNORE INTO file_shares (token, user_id, node_id, created_at, expires_at, revoked) VALUES (?, ?, ?, ?, ?, 0)',
+      )
+      .bind(token, userId, rawNodeId, now, expiresAt)
+      .run()
+    if (inserted.meta.changes > 0) return json({ token, nodeId: rawNodeId, expiresAt }, 201)
+  }
+  return json({ error: 'server-error', message: '生成分享链接失败，请重试' }, 500)
+}
+
+/** DELETE /api/files/shares/{token} —— 撤销一条分享（软撤销：revoked = 1） */
+async function handleRevokeShare(request: Request, env: Env, token: string): Promise<Response> {
+  const identity = await requireUser(request, env)
+  if (isResponse(identity)) return identity
+
+  // token 形状不对 = 不可能存在，连库都不用查
+  if (!SHARE_TOKEN_RE.test(token)) return json({ error: 'not-found' }, 404)
+
+  const revoked = await env.DB
+    .prepare('UPDATE file_shares SET revoked = 1 WHERE token = ? AND user_id = ? AND revoked = 0')
+    .bind(token, identity.user.id)
+    .run()
+  // changes = 0：这个 token 不存在、不是自己的、或者已经撤销过 —— 三种都按 404 回
+  if (revoked.meta.changes === 0) return json({ error: 'not-found' }, 404)
+  return noContent()
+}
+
+/**
+ * GET /api/share/{token} —— 公开分享，**不需要登录**。
+ *
+ * 这是整个 Worker 里唯一一个不鉴权的文件读取口，所以安全处理要单独说清楚：
+ *   - 返回前重新过一遍类型白名单（inline / attachment）和 nosniff；
+ *   - 加 CSP `default-src 'none'; sandbox`：即使某个类型被浏览器内联打开，
+ *     页面里的脚本、外链、表单也全都跑不了，沙箱化后也无法操作本站的存储；
+ *   - cache-control: no-store：分享可以随时撤销，缓存住就等于撤销不掉。
+ */
+async function handlePublicShare(env: Env, token: string): Promise<Response> {
+  if (!SHARE_TOKEN_RE.test(token)) return json({ error: 'not-found' }, 404)
+
+  const row = await env.DB
+    .prepare(
+      'SELECT s.node_id AS nodeId, s.user_id AS userId, s.expires_at AS expiresAt, s.revoked AS revoked, ' +
+        'n.name AS name, n.mime AS mime, n.deleted AS deleted ' +
+        'FROM file_shares s LEFT JOIN file_nodes n ON n.user_id = s.user_id AND n.id = s.node_id ' +
+        'WHERE s.token = ?',
+    )
+    .bind(token)
+    .first<PublicShareRow>()
+  if (!row || Number(row.revoked) === 1) return json({ error: 'not-found' }, 404)
+  if (row.name === null || Number(row.deleted) === 1) return json({ error: 'not-found' }, 404)
+
+  // 过期和不存在分开回：410 让前端能显示「链接已过期」，404 就是「没这个链接」。
+  // 撤销过的按 404 处理（对访问者来说，撤销和删除是一个意思）。
+  if (row.expiresAt !== null && Number(row.expiresAt) <= Date.now()) {
+    return json({ error: 'expired', message: '分享链接已过期' }, 410)
+  }
+
+  const bucket = env.FILES
+  if (!bucket) return storageNotConfigured()
+
+  const object = await bucket.get(fileKey(Number(row.userId), row.nodeId))
+  if (!object) return json({ error: 'not-found' }, 404)
+
+  const headers = downloadHeaders(row.mime ?? '', row.name)
+  headers['content-security-policy'] = "default-src 'none'; sandbox"
+  return new Response(object.body, { headers })
+}
+
 // ---------------------------------------------------------------- 路由
 
 /** 结尾多余的斜杠不影响含义：/api/snapshot/ 和 /api/snapshot 走同一条路由 */
@@ -833,6 +1645,63 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (request.method === 'GET') return handleGetSnapshot(request, env)
     if (request.method === 'PUT') return handlePutSnapshot(request, env)
     return methodNotAllowed('GET, PUT')
+  }
+
+  // ---- 文件管理（R2 存内容 + D1 存目录树） ----
+  //
+  // 这些接口全部要登录。公开分享的读取口 /api/share/{token} 单独放在下面：
+  // 它不带 /api/files/ 前缀、也不需要令牌 —— 任何人拿到 token 都能读那一个文件。
+  if (path === '/api/files/tree') {
+    if (request.method !== 'GET') return methodNotAllowed('GET')
+    return handleFileTree(request, env)
+  }
+  if (path === '/api/files/nodes') {
+    if (request.method !== 'POST') return methodNotAllowed('POST')
+    return handlePushNodes(request, env)
+  }
+  if (path === '/api/files/delete') {
+    if (request.method !== 'POST') return methodNotAllowed('POST')
+    return handleDeleteFiles(request, env)
+  }
+  if (path === '/api/files/usage') {
+    if (request.method !== 'GET') return methodNotAllowed('GET')
+    return handleFileUsage(request, env)
+  }
+  if (path === '/api/files/shares') {
+    if (request.method === 'GET') return handleListShares(request, env)
+    if (request.method === 'POST') return handleCreateShare(request, env)
+    return methodNotAllowed('GET, POST')
+  }
+  if (path.startsWith('/api/files/shares/')) {
+    let token = ''
+    try {
+      token = decodeURIComponent(path.slice('/api/files/shares/'.length))
+    } catch {
+      return json({ error: 'not-found' }, 404)
+    }
+    if (request.method !== 'DELETE') return methodNotAllowed('DELETE')
+    return handleRevokeShare(request, env, token)
+  }
+  if (path.startsWith('/api/files/content/')) {
+    const nodeId = readPathId(path, '/api/files/content/')
+    if (!nodeId) return json({ error: 'not-found' }, 404)
+    if (request.method === 'GET') return handleGetFileContent(request, env, nodeId)
+    if (request.method === 'PUT') return handlePutFileContent(request, env, nodeId)
+    return methodNotAllowed('GET, PUT')
+  }
+
+  // ---- 公开分享：唯一不需要令牌的文件读取口 ----
+  // 必须单独匹配：它不是 /api/files/ 前缀，漏了这一条的话前端生成的所有分享链接都会 404。
+  if (path.startsWith('/api/share/')) {
+    if (request.method !== 'GET') return methodNotAllowed('GET')
+    let token = ''
+    try {
+      token = decodeURIComponent(path.slice('/api/share/'.length))
+    } catch {
+      return json({ error: 'not-found' }, 404)
+    }
+    // 形状校验（32 位 hex）在 handlePublicShare 里：不在路由层重复一遍
+    return handlePublicShare(env, token)
   }
 
   // 未知的 /api/* 一律 404 JSON。

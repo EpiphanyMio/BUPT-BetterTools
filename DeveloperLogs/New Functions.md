@@ -10,6 +10,45 @@
 
 ---
 
+## 2026-10-19 14:55 · 文件管理上云：R2 存内容 + D1 存目录树 + 公开分享链接
+
+文件管理从「只存在这台电脑的浏览器里」变成「登录后自动同步到云端」，并支持给单个文件生成公开分享链接。换设备登录同一账号能看到全部文件和目录；断网时照常新建 / 改名 / 移动 / 删除，联网后自动补传。
+
+### 三层各管什么
+
+| 层 | 存什么 | 为什么 |
+| --- | --- | --- |
+| R2（`bupt-bettertools-files`） | 文件内容（二进制），key = `u/{userId}/{nodeId}` | 出站流量免费、容量够，二进制不该塞进数据库 |
+| D1（`file_nodes` / `file_usage` / `file_shares`） | 目录树名册、每人已用字节、分享 token | 目录树不放进快照：快照是整包 256KB 覆盖，改一个文件名要重传全部 |
+| IndexedDB | 本机缓存 + 待上传队列（`outbox`） | 离线优先，本地永远先落盘，云端只是"稍后传一份" |
+
+桶**不公开**：读、写、删都过 `/api/files/*`，鉴权复用现有会话令牌。
+
+### 同步怎么做
+
+- 写操作先写 IndexedDB，再往 `outbox` 排一条；`online` / 页面活动时按顺序推。
+- 拉取是整棵目录树（含**墓碑**）：别的设备删掉的东西，本机下次拉树时才知道"它没了"，否则会被当成本地新增又传回去，删了又活。
+- 冲突只可能发生在同一节点被两台设备改：服务端按到达顺序 LWW，客户端收到就覆盖本地；不做字段级合并（合并出错是静默的）。
+- 首次登录会把本机**登录前就有的老文件**自动迁移上去（本地有、云端没有 → 重新入队，父节点先传、内容跟着传）。
+
+### 两个必须记住的坑
+
+**① 配额不能信客户端报的 size。** 客户端在传内容之前会先推一份"猜测的大小"用于列表显示。第一版上传接口拿 `node.size` 算差值，结果第一次上传永远算出负增量，`file_usage` 一直记 0。改成以 **R2 对象真实大小**为准（上传前 `head` 旧对象、删除时 `head` 再退字节）之后才对。这个 bug 只有真的跑过接口才会暴露出来。
+
+**② 换账号必须清本机缓存。** IndexedDB 是按浏览器存的、不按账号。A 退出 B 登录后，A 的文件会被当成"本地孤儿"直接上传进 B 的账号（静默泄漏）。所以 `localStorage` 记一个 `better-tools:files-owner`，主人变了先 `resetFileStore()`；第一次没有标记**不清**，那正好是迁移老文件。
+
+### 分享链接
+
+`POST /api/files/shares` 生成 32 位 hex token，公开地址 `/api/share/{token}`，无需登录。安全上做了三件事：**类型白名单**决定 inline 还是 attachment（HTML / SVG 一律强制下载，避免同源 XSS）；`x-content-type-options: nosniff`；`content-security-policy: default-src 'none'; sandbox`。删除节点会顺带撤销它的分享，链接立即失效。
+
+### 部署前必须先做（不然 deploy 会失败）
+
+1. 建 R2 桶：`npx wrangler r2 bucket create bupt-bettertools-files`（或控制台创建）。
+2. 对线上库执行新表：`npx wrangler d1 execute bupt-bettertools-sync --remote --file=worker/schema.sql`。
+   顺序不能反：先建桶再 push，否则自动构建在 `wrangler deploy` 这一步失败（线上会停在上一版，不会挂，但改动上不去）。
+
+*涉及文件：`worker/index.ts`、`worker/schema.sql`、`worker/r2.ts`、`worker/d1.ts`、`wrangler.jsonc`、`src/lib/fileCloud.ts`、`src/lib/fileSync.ts`、`src/lib/fileStore.ts`、`src/hooks/useFileSync.ts`、`src/modules/FilesModule.tsx`、`src/App.tsx`*
+
 ## 2026-10-19 14:37 · 修复卡片「详情/收藏」按钮压住备注文字
 
 卡片右上角的 ⓘ 和 ☆ 是绝对定位浮在卡片上的（`top-11 right-2`），而备注紧跟在图标行下面开始排，第一行文字正好从按钮底下穿过去，被挡住一半。
@@ -170,128 +209,13 @@ SQLite 没有"有条件的 DDL"，所以迁移写成可重复执行的四步：
 
 ---
 
-## 2026-10-18 22:46 · 多端数据同步：Cloudflare Worker + D1 后端 + 前端同步引擎
-
-手机和电脑现在可以共用同一份数据了。在「通用设置 → 云端同步」里填一次令牌，
-之后工具增删改、分组、收藏、排序、默认分组都会自动同步，另一台设备打开就能看到。
-
-### 为什么必须要有后端
-
-浏览器的安全模型就是不让一个站点的 localStorage 流向另一台设备。要跨设备共享，
-必须有一个双方都能访问的中间人 —— 那就是后端。没有"纯前端"的做法。
-
-### 三个关键设计
-
-**① 整包快照，不做字段级合并。** 云端 D1 里只有一张表、一行数据（`snapshot` 的 id 永远是 1）。
-全部数据才十几 KB、又是单用户；拆表就要处理"两台设备各改一条"的合并规则，
-而合并规则写错是**静默**的 —— 数据被揉在一起，用户不知道从哪一步开始错的。
-单行快照把冲突简化成一个数字比较，行为可预测。
-
-**② 乐观锁：版本号塞进 WHERE，而不是"先查再改"。**
-
-```sql
-UPDATE snapshot SET revision = revision + 1, ... WHERE id = 1 AND revision = ?baseRevision
-```
-
-别人先写过 → 这行匹配不到 → `changes === 0` → 回 409 并带回当前快照。
-为什么不能先 SELECT 再 UPDATE：查完到改之间别的请求可能已经写进去了，
-那个空档就是数据被覆盖的地方。判断和写入由数据库一句完成，中间没有缝。
-
-**③ 离线优先：同步是加分项，不是运行前提。**
-
-点收藏 → 立刻写 localStorage（界面马上响应）→ 后台防抖 1.5 秒再推。
-网络断了、服务器挂了，网站照常完整可用；恢复网络后自动补一次。
-
-### 鉴权与安全
-
-- 一个人用的服务，不做注册登录：一个长随机串当令牌，只走 `wrangler secret put`
-- **先鉴权再解析 body**：没令牌的请求连 256KB 都不该让我们解析（Worker 按调用计费）
-- 令牌用**定长时间比较**：直接 `a === b` 会在第一个不同字符处提前返回，
-  攻击者能从响应耗时差里一位一位试出令牌
-
-### 两个容易踩的坑
-
-**① SPA 回落会抢在 Worker 前面。** `assets` 里配了"找不到文件就回落 index.html"，
-这条规则会把 `/api/snapshot` 也吃掉，浏览器拿到一整页 HTML，前端 `res.json()` 只抛一句看不懂的语法错误。
-修法是在 assets 里加 `"run_worker_first": ["/api/*"]`，让接口路径先交给 Worker。
-（本地测试走 Vite 代理、不经过静态资源层，所以这个问题只有真正部署才会暴露。）
-
-**② 这台机器上 `wrangler dev` / `d1 execute` 起不来。** workerd 建不了自己的临时目录
-（`kj/filesystem CreateDirectory: 拒绝访问`），是环境限制不是代码问题 ——
-`wrangler deploy --dry-run` 能正常打包（读 116 个资源文件、识别 D1 绑定）。
-所以验证改用 `scripts/_sync-e2e.mjs`：真 HTTP + 真 `node:sqlite` + 直接 import 真实的 `worker/index.ts`
-（`scripts/_*` 已 gitignore，不进仓库）。
-
-### 验证
-
-- **接口层 12 项断言全过**：401 / 空云端 / 首次写入 / 数据一致 / 409 冲突 / 过期版本写入 /
-  形状非法 / 超 500 条 / 未知路径 404 / OPTIONS 204 / 方法不支持 405
-- **浏览器端到端 6 项全过**：填令牌 → 状态变「已同步」→ 33 个工具推上云端 → 收藏后自动上传 →
-  **清空本地模拟换设备 → 数据从云端恢复，界面也真的变回「已收藏」**
-- `pnpm build` exit 0（52 个模块）
-
-### 已经真正部署上线
-
-- D1 库 `bupt-bettertools-sync`（`0fc7584c-…`），表已建
-- `SYNC_TOKEN` 已设进 Cloudflare secret（48 位十六进制；**只写在 `scripts/_sync-token.txt`，已 gitignore**）
-- Worker 已部署：<https://bupt-bettertools.yuesu76.workers.dev/>
-- 线上实测：不带令牌 → 401；带令牌 → 200 且 `data: null`；`content-type: application/json`
-  （证明 `run_worker_first` 生效，`/api/*` 没被 index.html 顶掉）
-
-**上线时踩到的两个坑**：
-
-1. 有个并行对话往 `wrangler.jsonc` 里加**第二个 D1 绑定**（`binding: bupt_bettertools_sync`），
-   而原来那个 `DB` 还是占位 id —— 多绑了个没人用的库，部署照样失败。已整理成单绑定。
-2. 第一次生成令牌用了 `[RandomNumberGenerator]::GetBytes` + `[Convert]::ToHexString`，
-   这个 PowerShell 里**两个方法都不存在**，`$token` 是空串 → secret 被设成空值 →
-   Worker 是 fail-closed 的，于是所有请求 401。改用 `node -e "crypto.randomBytes"` 重新生成并覆盖。
-
-### 跨设备实测（线上站点，两个全新浏览器配置）
-
-- 设备 A（桌面尺寸）：填令牌 → 已同步 → 33 个工具上云（revision 1）→ 收藏「GitHub」→ 自动上传（revision 2）
-- 设备 B（手机尺寸、全新配置、初始无收藏）：填令牌 → **收藏自动写回本地，界面里 GitHub 真的显示「已收藏」**
-
-*涉及文件：`worker/index.ts`（新增）、`worker/schema.sql`（新增）、`worker/README.md`（新增）、`wrangler.jsonc`、`src/lib/sync.ts`（新增）、`src/lib/syncData.ts`（新增）、`src/hooks/useSync.ts`（新增）、`src/components/SyncSettings.tsx`（新增）、`src/types.ts`、`src/App.tsx`、`src/hooks/useTools.ts`、`src/hooks/useFavorites.ts`、`src/hooks/useToolOrder.ts`、`src/hooks/useAppSettings.ts`、`src/lib/constants.ts`、`src/modules/ToolboxModule.tsx`、`src/components/GeneralSettingsPanel.tsx`、`vite.config.ts`、`package.json`、`pnpm-workspace.yaml`、`.gitignore`*
-
----
-
-## 2026-10-18 22:00 · 修复手机端标题与按钮的排版冲突
-
-手机上进入「常用工具」后，标题「🔗 常用工具」被压成一条竖线，右边那排按钮还撑出了屏幕。
-
-**根因**是 flex 布局的一个基本行为：头部是 `flex justify-between`，左右两块并排；
-右边那组按钮写了 `shrink-0`（**不许收缩**），于是空间不够时，压缩的只有左边 ——
-标题从 6 个字被挤到只剩 40px 宽、逐字换行；而按钮行本身要 319px，
-在 320px 的屏上直接溢出 88px。
-
-修复前实测（375px 视口）：`h1` 宽 **40px**、`header` 的 scrollWidth 376 > clientWidth 343、
-按钮行右边界跑到 392（超出屏幕）。
-
-**修法**：窄屏上下排列，宽屏才左右分栏。
-
-- 容器：`flex items-start justify-between` → `flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between`
-- 标题块：加 `min-w-0` —— flex 子项默认 `min-width: auto`，不加还是会被内容顶住、不肯缩到内容以下；
-- 按钮行：`shrink-0` 换成 `flex-wrap`，宽屏时才 `sm:shrink-0`，这样最窄的屏上按钮会折成两行而不是溢出。
-
-「文件管理」的头部结构一模一样，在 320px 下标题同样被挤（`h1` 只有 121px、折成两行），一并改掉。
-
-**修复后实测**（320 / 375 / 1280 三档 × 两个模块，共 16 项全部通过）：
-
-| 视口 | 标题尺寸 | 按钮 | 横向溢出 | 排列 |
-| --- | --- | --- | --- | --- |
-| 320 | 288×36（占满一行） | 折成 2 行 | 无 | 上下 |
-| 375 | 343×36 | 1 行 | 无 | 上下 |
-| 1280 | — | 1 行 | 无 | 左右分栏（桌面不受影响） |
-
-*涉及文件：`src/modules/ToolboxModule.tsx`、`src/modules/FilesModule.tsx`*
-
----
-
 ## 📚 历史归档
 
-> 更早的 14 条已移到 [`archive/NewFunctions-2026-10.md`](archive/NewFunctions-2026-10.md)。
+> 更早的 16 条已移到 [`archive/NewFunctions-2026-10.md`](archive/NewFunctions-2026-10.md)。
 > 需要查历史时再打开，不要每次读完。
 
+- 2026-10-18 22:46 多端数据同步：Cloudflare Worker + D1 后端 + 前端同步引擎
+- 2026-10-18 22:00 修复手机端标题与按钮的排版冲突
 - 2026-10-18 21:44 · 部署上线到 Cloudflare Workers + 页脚小字改写
 - 2026-10-16 16:22 · 运行环境整理：pnpm 配置搬家 + 启动脚本去掉写死的 DSH 路径
 - 2026-10-16 16:10 · 工具卡片对齐修复 + 详情面板（ⓘ）

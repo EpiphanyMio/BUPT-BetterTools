@@ -1,8 +1,9 @@
-// 文件管理模块：用 IndexedDB 在本机浏览器里存个人文件（PDF / Word / 图片等）。
+// 文件管理模块：在本机浏览器（IndexedDB）存个人文件，登录后自动同步到云端（R2）。
 //
-// ⚠️ 重要前提：这个网站没有后端，文件存在**这台电脑 · 这个浏览器**里。
-// 换设备、换浏览器、或用「清除浏览数据」都会看不到它们 —— 这是阶段 1 的固有限制，
-// 真正跨设备要等路线图里的「Python 后端同步」阶段。
+// 存储的两层含义：
+//   - 本机 IndexedDB 始终是「工作副本 / 缓存」：离线也能浏览、打开已缓存的文件；
+//   - 登录后，目录树和文件内容会同步到云端（R2 + D1），换设备登录同一账号就能看到。
+// 访客 / 未登录时不会上传，文件只存在于这台电脑 · 这个浏览器里。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -38,7 +39,19 @@ import {
 import { canPreview, formatBytes, formatTime, iconFor } from '../lib/fileUtils'
 // 打开 / 下载文件的具体动作抽在了 fileActions 里 —— 全局搜索也要用同一套
 import { downloadFileNode, openFileNode } from '../lib/fileActions'
+// 云端文件接口：具体实现由数据层提供，这里只按契约签名调用，不自己拼 fetch
+import {
+  USER_QUOTA_BYTES,
+  createShare,
+  fetchUsage,
+  listShares,
+  revokeShare,
+  type CloudUsage,
+} from '../lib/fileCloud'
+import { useAuth } from '../hooks/useAuth'
+import { useFileSync } from '../hooks/useFileSync'
 import { useGuest } from '../hooks/useGuest'
+import { syncFilesNow } from '../lib/fileSync'
 import type { FileJumpRequest } from '../types'
 
 // 拖拽 id 前缀。dnd-kit 靠 id 区分"谁是谁"，加前缀判断起来最简单。
@@ -74,6 +87,12 @@ interface NodeRowProps {
   onDownload: (node: FileNode) => void
   onRename: (node: FileNode) => void
   onDelete: (node: FileNode) => void
+  /** 打开这个文件的分享弹窗 */
+  onShare: (node: FileNode) => void
+  /** 能不能生成分享链接（要登录，且不是访客） */
+  canShare: boolean
+  /** 不能分享时给 title 的原因说明 */
+  shareHint: string
   /** 只读（访客）模式：重命名 / 删除这类写操作一律禁用 */
   readOnly: boolean
 }
@@ -87,6 +106,9 @@ function NodeRow({
   onDownload,
   onRename,
   onDelete,
+  onShare,
+  canShare,
+  shareHint,
   readOnly,
 }: NodeRowProps) {
   // 这一行同时有两个身份：可以被拖动、文件夹还能接收别人。
@@ -183,6 +205,19 @@ function NodeRow({
             下载
           </button>
         )}
+        {/* 只有文件能分享，文件夹没有对应的公开下载地址。
+            生成分享链接要写云端数据，所以未登录 / 访客禁用，用 title 说明原因。 */}
+        {node.kind === 'file' && (
+          <button
+            type="button"
+            onClick={() => onShare(node)}
+            disabled={!canShare}
+            title={canShare ? '生成公开分享链接' : shareHint}
+            className="rounded-lg px-2 py-1 text-fg-subtle transition hover:bg-surface-3 hover:text-fg disabled:opacity-50"
+          >
+            分享
+          </button>
+        )}
         {/* 重命名 / 删除是写操作：访客点不动。
             打开、下载是读操作，保持可用 —— 访客就是来看的。
             只补一个 disabled:opacity-50（项目里已有的写法），不动别的类名。 */}
@@ -233,11 +268,238 @@ function RootDropChip({ active, onClick }: { active: boolean; onClick: () => voi
   )
 }
 
+// ---------------------------------------------------------------- 分享弹窗
+
+// 分享链接指向 Worker 上的公开下载接口。用 location.origin 而不是写死域名：
+// 本地开发和线上部署复制的都是当前站点能打开的地址。
+function shareLinkOf(token: string) {
+  return location.origin + '/api/share/' + token
+}
+
+interface ShareModalProps {
+  node: FileNode
+  onClose: () => void
+}
+
+function ShareModal({ node, onClose }: ShareModalProps) {
+  const [loading, setLoading] = useState(true)
+  // loadError 专门表示「读取已有分享」失败 —— 这时不能显示成"还没有链接"，
+  // 否则用户会以为没分享过，又去生成一个重复的。
+  const [loadError, setLoadError] = useState('')
+  const [token, setToken] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [copied, setCopied] = useState(false)
+  // 重试计数：改它就能让下面的 effect 重新跑一遍
+  const [reloadKey, setReloadKey] = useState(0)
+
+  // 打开弹窗（以及点重试）时查一遍已有分享。
+  // 每次都要重新查：分享可能在别的标签页或别的设备上被撤销过。
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setLoadError('')
+    setToken(null)
+    setError('')
+    setCopied(false)
+    listShares()
+      .then((shares) => {
+        if (cancelled) return
+        // 一个文件只保留一条分享记录，按 nodeId 找即可
+        const found = shares.find((share) => share.nodeId === node.id)
+        setToken(found ? found.token : null)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setLoadError('读取分享状态失败：' + String(err))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [node.id, reloadKey])
+
+  // 按 Esc 关闭 + 锁住背景滚动，和项目里其它弹窗（ToolDetailModal）保持一致
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [onClose])
+
+  async function copyLink(text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      // 浏览器可能因为"非安全上下文 / 没给剪贴板权限"拒绝，退化成让用户手动选
+      window.prompt('复制下面的链接：', text)
+    }
+  }
+
+  async function handleCreate() {
+    setBusy(true)
+    setError('')
+    try {
+      const created = await createShare(node.id)
+      setToken(created.token)
+      // 生成后自动复制一次：用户点"生成"的下一步就是去发链接，少点一下
+      await copyLink(shareLinkOf(created.token))
+    } catch (err) {
+      setError('生成分享链接失败：' + String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleRevoke() {
+    if (!token) return
+    setBusy(true)
+    setError('')
+    try {
+      await revokeShare(token)
+      setToken(null)
+      setCopied(false)
+    } catch (err) {
+      setError('取消分享失败：' + String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    // 点遮罩关闭；点面板本身用 stopPropagation 挡住，否则点链接/按钮会顺带关掉弹窗
+    <div className="scrim flex items-start justify-center p-4 sm:py-16" onClick={onClose}>
+      <div className="modal-panel w-full max-w-md" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-start gap-3 px-5 pt-5">
+          <span
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-btn bg-surface-2 text-2xl"
+            aria-hidden="true"
+          >
+            {iconFor(node.name, node.kind)}
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-lg font-medium text-fg">分享「{node.name}」</h2>
+            <p className="mt-1 text-xs text-fg-subtle">
+              拿到链接的人不用登录，就能直接下载这个文件
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            title="关闭"
+            aria-label="关闭"
+            className="btn-icon btn"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="px-5 pb-5 pt-4">
+          {loading ? (
+            <p className="text-sm text-fg-subtle">读取分享状态…</p>
+          ) : loadError ? (
+            <div className="space-y-3">
+              <p className="rounded-btn bg-danger-bg px-3 py-2 text-xs leading-relaxed text-danger">
+                {loadError}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReloadKey((key) => key + 1)}
+                  className="btn btn-neutral"
+                >
+                  重试
+                </button>
+                <button type="button" onClick={onClose} className="btn btn-neutral">
+                  关闭
+                </button>
+              </div>
+            </div>
+          ) : token ? (
+            <div className="space-y-3">
+              <div>
+                <h3 className="mb-1 text-xs font-medium tracking-wide text-fg-subtle">
+                  分享链接
+                </h3>
+                {/* select-all + break-all：只读但能整段选中，长链接也不会撑破弹窗 */}
+                <code className="block select-all break-all rounded-btn bg-surface-2 px-3 py-2 text-xs leading-relaxed text-fg-muted">
+                  {shareLinkOf(token)}
+                </code>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void copyLink(shareLinkOf(token))}
+                  className="btn btn-primary"
+                >
+                  {copied ? '✓ 已复制' : '复制链接'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRevoke()}
+                  disabled={busy}
+                  className="btn btn-neutral disabled:opacity-50"
+                >
+                  {busy ? '处理中…' : '取消分享'}
+                </button>
+                <button type="button" onClick={onClose} className="btn btn-neutral">
+                  关闭
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm leading-relaxed text-fg-muted">
+                这个文件还没有分享链接。生成后，任何拿到链接的人都能下载它。
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleCreate()}
+                  disabled={busy}
+                  className="btn btn-primary disabled:opacity-50"
+                >
+                  {busy ? '生成中…' : '生成分享链接'}
+                </button>
+                <button type="button" onClick={onClose} className="btn btn-neutral">
+                  关闭
+                </button>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <p className="mt-3 rounded-btn bg-danger-bg px-3 py-2 text-xs leading-relaxed text-danger">
+              {error}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- 主组件
 
 export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps) {
   // 访客（只读）模式。只取 isGuest：退出访客的入口在顶部横幅里，这个模块不用管。
   const { isGuest } = useGuest()
+  // 登录态决定两件事：文件要不要上云、能不能生成分享链接（都得有账号）。
+  const { user } = useAuth()
+  const loggedIn = user !== null
+  const cloudEnabled = loggedIn && !isGuest
+  // 云端同步状态是全局唯一的，数据层维护，这里只订阅展示
+  const sync = useFileSync()
 
   // 空字符串 = 根目录。带着跳转请求进来时，直接打开目标文件夹。
   const [currentId, setCurrentId] = useState(jump ? jump.folderId : '')
@@ -246,6 +508,10 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
   const [stats, setStats] = useState<FileStats | null>(null)
   const [quota, setQuota] = useState<{ usage: number; quota: number } | null>(null)
   const [persisted, setPersisted] = useState<boolean | null>(null)
+  // 云端用量：未登录不请求；失败静默（fetchUsage 自己会返回 null）
+  const [cloudUsage, setCloudUsage] = useState<CloudUsage | null>(null)
+  // 当前打开分享弹窗的文件；null = 弹窗关闭
+  const [shareNode, setShareNode] = useState<FileNode | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   // 下面两个是给界面区分「加载中 / 空 / 出错」用的显式状态。
@@ -300,11 +566,48 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     setSelected(new Set()) // 换文件夹时清空选择，避免误删看不见的东西
   }, [currentId, refresh])
 
+  // 云端合并进本地后（包括别的设备刚改过），数据层会广播这个事件：
+  // 静默重读当前目录，用户不用手动刷新就能看到变化。
+  useEffect(() => {
+    function onFilesChanged() {
+      void refresh(currentId, { silent: true })
+    }
+    window.addEventListener('better-tools:files-dirty', onFilesChanged)
+    return () => window.removeEventListener('better-tools:files-dirty', onFilesChanged)
+  }, [currentId, refresh])
+
+  // 打开文件管理时顺手拉一次云端。App 启动时已经同步过，但那可能是很久以前；
+  // 这里补一次，免得列表停在别的设备改动之前的版本。失败静默（状态栏会显示）。
+  useEffect(() => {
+    if (!cloudEnabled) return
+    void syncFilesNow()
+  }, [cloudEnabled])
+
   useEffect(() => {
     requestPersistentStorage()
       .then(setPersisted)
       .catch(() => setPersisted(false))
   }, [])
+
+  // 云端用量只在登录后请求；每次同步完成（lastSyncedAt 变了）再刷一次，
+  // 这样刚上传的文件能立刻反映到「已用多少」里。
+  useEffect(() => {
+    if (!loggedIn) {
+      setCloudUsage(null)
+      return
+    }
+    let cancelled = false
+    fetchUsage()
+      .then((usage) => {
+        if (!cancelled) setCloudUsage(usage)
+      })
+      .catch(() => {
+        // 静默：用量只是附加信息，失败不该弹错误打扰用户
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [loggedIn, sync.lastSyncedAt])
 
   // 从「全局搜索」点了一个文件夹跳进来：打开它，并清掉本模块自己的搜索关键词
   useEffect(() => {
@@ -563,6 +866,34 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
   // 挂在根节点的 data-list-state 上，样式侧可以直接用 [data-list-state="loading"] 之类选择。
   const listState = listLoading ? 'loading' : listError ? 'error' : items.length === 0 ? 'empty' : 'ready'
 
+  // 云端状态 -> 中文说明。error 时直接显示 lastError：有具体原因就别只写"出错了"。
+  const syncStatusText =
+    sync.status === 'syncing'
+      ? '同步中'
+      : sync.status === 'synced'
+        ? '已同步'
+        : sync.status === 'offline'
+          ? '离线（改动稍后上传）'
+          : sync.status === 'error'
+            ? sync.lastError || '同步失败'
+            : sync.status === 'unauthenticated'
+              ? '未登录'
+              : '等待同步'
+
+  // 颜色只用语义 class（设计令牌），不写死色值
+  const syncStatusTone =
+    sync.status === 'error'
+      ? 'text-danger'
+      : sync.status === 'offline'
+        ? 'text-warn'
+        : sync.status === 'synced'
+          ? 'text-primary'
+          : 'text-fg-subtle'
+
+  // 生成分享链接要写云端数据：必须有账号，且访客模式下一切写操作都禁用
+  const canShare = loggedIn && !isGuest
+  const shareHint = isGuest ? GUEST_LOCK_HINT : '登录后才能生成分享链接'
+
   return (
     <div data-list-state={listState} className="min-h-screen bg-surface-2 text-fg">
       <div className="mx-auto max-w-5xl px-4 py-8">
@@ -575,6 +906,20 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
               {stats
                 ? stats.fileCount + ' 个文件 · ' + stats.folderCount + ' 个文件夹 · ' + formatBytes(stats.bytes)
                 : '读取中…'}
+            </p>
+            {/* 云端同步状态：让用户知道文件到底传上去了没有。
+                云端用量只有登录后才请求，未登录时这一行只显示「未登录」。 */}
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <span className={syncStatusTone}>☁️ 云端：{syncStatusText}</span>
+              {sync.pending > 0 && (
+                <span className="text-fg-subtle">· {sync.pending} 项待上传</span>
+              )}
+              {cloudUsage && (
+                <span className="text-fg-subtle">
+                  · 云端已用 {formatBytes(cloudUsage.used)} /{' '}
+                  {formatBytes(cloudUsage.quota > 0 ? cloudUsage.quota : USER_QUOTA_BYTES)}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
@@ -600,11 +945,29 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
           </div>
         </header>
 
-        {/* 存储位置说明：这件事必须说清楚，否则用户会以为文件在云端 */}
-        <div className="mb-4 rounded-btn border border-warn bg-warn-bg px-4 py-3 text-xs leading-relaxed text-warn">
-          <b>这些文件只存在这台电脑的这个浏览器里，没有上传到任何服务器。</b>
-          <br />
-          换设备、换浏览器、或用「清除浏览数据」都会看不到它们。
+        {/* 存储位置说明：登录后是"云端 + 本机缓存"，未登录 / 访客是"只在本机"。
+            两种情况必须说清楚，否则用户会误判文件到底在不在云端。 */}
+        <div
+          className={
+            'mb-4 rounded-btn border px-4 py-3 text-xs leading-relaxed ' +
+            (cloudEnabled
+              ? 'border-primary bg-primary-soft text-fg-muted'
+              : 'border-warn bg-warn-bg text-warn')
+          }
+        >
+          {cloudEnabled ? (
+            <>
+              <b className="text-fg">文件会自动同步到云端（R2），本机保留一份缓存，离线也能用。</b>
+              <br />
+              换设备登录同一账号就能看到这些文件；离线期间的改动会在联网后自动上传。
+            </>
+          ) : (
+            <>
+              <b>这些文件只存在这台电脑的这个浏览器里，没有上传到任何服务器。</b>
+              <br />
+              换设备、换浏览器、或用「清除浏览数据」都会看不到它们。
+            </>
+          )}
           {persisted === false && ' 当前浏览器尚未允许持久化存储，磁盘紧张时可能被自动回收。'}
           {quota && quota.usage > 0 && (
             <>
@@ -752,6 +1115,9 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
                   onDownload={handleDownload}
                   onRename={handleRename}
                   onDelete={handleDelete}
+                  onShare={setShareNode}
+                  canShare={canShare}
+                  shareHint={shareHint}
                   readOnly={isGuest}
                 />
               ))}
@@ -776,6 +1142,9 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
           Word / Excel 这类需要下载后用本地软件打开。
         </p>
       </div>
+
+      {/* 分享弹窗挂在最外层：.scrim 是 fixed 定位，放在这里不会被内容裁掉 */}
+      {shareNode && <ShareModal node={shareNode} onClose={() => setShareNode(null)} />}
     </div>
   )
 }

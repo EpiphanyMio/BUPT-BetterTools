@@ -25,4 +25,12 @@ export interface D1PreparedStatement {
 
 export interface D1Database {
   prepare(query: string): D1PreparedStatement
+  /**
+   * 一次提交多条语句，整批要么全成功、要么全失败（相当于一个事务）。
+   *
+   * 文件管理里「一次拖进来 20 个文件」会一次推 20 个节点：
+   * 一条一条发就是 20 次往返，而且中途断掉会留下半批数据。
+   * 用 batch 一次发完，服务端自己保证原子性。
+   */
+  batch<T = Record<string, unknown>>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>
 }

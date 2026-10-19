@@ -21,6 +21,7 @@ import { useAuth } from './hooks/useAuth'
 import { useGuest } from './hooks/useGuest'
 import { syncSeedTools } from './hooks/useTools'
 import { resetSyncState, setSnapshotApplier, setSyncSource, syncNow } from './lib/sync'
+import { startFileSync, stopFileSync } from './lib/fileSync'
 import { readSyncData, writeSyncData } from './lib/syncData'
 import type { FileJumpRequest } from './types'
 
@@ -84,6 +85,9 @@ export default function App() {
     if (status !== 'authenticated') {
       booted.current = false
       setCloudReady(false)
+      // 文件同步也要停：摘掉 online / files-dirty 监听和 10 秒重试计时器，
+      // 否则退出登录后还会拿着旧会话的令牌继续发文件请求。
+      stopFileSync()
       // 回到未登录：内存里的 revision / 脏标记可能还是**上一个人**的。
       // 拿它和下一个人的云端比大小，会把"云端更新"误判成"本地更新"，
       // 反过来用本地数据覆盖人家的云端 —— 这种事故是静默的，所以这里必须对齐一次。
@@ -93,6 +97,10 @@ export default function App() {
 
     if (booted.current) return
     booted.current = true
+
+    // 文件同步独立于快照：它自己拉目录树、排队上传，不阻塞主界面。
+    // 登录成功后启动一次即可，后续靠 online / files-dirty 事件自行触发。
+    startFileSync()
 
     // 登录成功：先把云端那份拉下来再放行主界面。
     //
