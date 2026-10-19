@@ -61,12 +61,12 @@
 //   DELETE /api/invites/{code} 需管理员 → 204
 //   GET    /api/snapshot      需登录    → 200 { revision, updatedAt, data }
 //   PUT    /api/snapshot      需登录    → 200 | 409
-//   GET    /api/files/tree    需登录    → 200 { nodes }（含墓碑）
-//   POST   /api/files/nodes   需登录    → 200 { ok }（一次 ≤200 条）
-//   POST   /api/files/delete  需登录    → 200 { ok, deleted }
-//   GET    /api/files/usage   需登录    → 200 { used, quota }（quota 是本人配额）
-//   PUT    /api/files/content/{id}  需登录 → 200 { ok, size }
-//   GET    /api/files/content/{id}  需登录 → 二进制
+//   GET    /api/files/tree    需登录    → 200 { nodes }（含墓碑；个人 + 公共文件池，带 scope）
+//   POST   /api/files/nodes   需登录    → 200 { ok }（一次 ≤200 条；scope=public 写进池子）
+//   POST   /api/files/delete  需登录    → 200 { ok, deleted }（可删自己的或池内节点）
+//   GET    /api/files/usage   需登录    → 200 { used, quota }（quota 是本人配额，含池内上传）
+//   PUT    /api/files/content/{id}  需登录 → 200 { ok, size }（池内内容按上传者记配额）
+//   GET    /api/files/content/{id}  需登录 → 二进制（自己的或池内的）
 //   GET    /api/files/shares  需登录    → 200 { shares }
 //   POST   /api/files/shares  需登录    → 201 { token, nodeId, expiresAt }
 //   DELETE /api/files/shares/{token} 需登录 → 204
@@ -206,7 +206,15 @@ interface CloudNode {
   mime: string
   deleted: boolean
   updatedAt: number
+  /**
+   * 这条节点在「我的文件」还是「公共文件池」里。
+   * 库里没有 scope 列：user_id = POOL_USER_ID(0) 的行就是公共文件池，
+   * 其余是当前账号自己的。返回给前端时翻译成这个字段，客户端不用知道保留 id。
+   */
+  scope: FileScope
 }
+
+type FileScope = 'private' | 'public'
 
 /** 客户端推上来的节点：只有这些字段，deleted / updatedAt 由服务端决定，不接受客户端传。 */
 interface FileNodePayload {
@@ -216,6 +224,7 @@ interface FileNodePayload {
   kind: 'file' | 'folder'
   size: number
   mime: string
+  scope: FileScope
 }
 
 /** file_nodes 的查询行：列名用 AS 转成驼峰，省得下面每处都手写 snake→camel */
@@ -228,6 +237,7 @@ interface CloudNodeRow {
   mime: string
   deleted: number
   updatedAt: number
+  scope: string
 }
 
 interface CloudShare {
@@ -295,6 +305,17 @@ const DEFAULT_USER_QUOTA_BYTES = 500 * 1024 * 1024
 // 所有账号的已用字节加起来不能越过这条线，单个账号的配额也以它为上限 ——
 // 所以它是「全站实际用量」的兜底，而不是每个账号各自的上限。
 const SITE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024
+
+// 公共文件池在 file_nodes 里用的保留 user_id。
+//
+// 池子里的节点不属于某一个账号，但底下的表是按 (user_id, id) 存节点的。
+// 为什么不给 file_nodes 加一列 scope：SQLite 没有 ADD COLUMN IF NOT EXISTS，
+// 加列会让 schema.sql 没法重复执行（文件开头的约定），线上还得先跑一次迁移。
+// 真实账号的 id 从 1 开始（AUTOINCREMENT），0 永远空着，正好拿来当「池子」的保留 id。
+//
+// 代价是：池内节点的配额不能记在 user_id=0 头上（0 不是人），要记到「谁传的」
+// 那个真实账号上 —— 所以池内内容的 R2 对象带 customMetadata.uploader。
+const POOL_USER_ID = 0
 
 // 一次请求最多带多少个节点 / 删除多少个 id。拖 200 个文件进来已经是极端情况，
 // 再大就不该靠一次请求：D1 的 batch 语句越多，一次失败重试的成本越高。
@@ -1145,8 +1166,10 @@ async function handlePutSnapshot(request: Request, env: Env): Promise<Response> 
 
 // ---------------------------------------------------------------- 文件管理（云端）
 //
-// 数据分两处存：文件内容进 R2（key = u/{userId}/{nodeId}），目录树进 D1 的
-// file_nodes / file_usage / file_shares（见 worker/schema.sql）。
+// 数据分两处存：文件内容进 R2（私人 key = u/{userId}/{nodeId}，公共池 key = p/{nodeId}），
+// 目录树进 D1 的 file_nodes / file_usage / file_shares（见 worker/schema.sql）。
+// 公共文件池复用同一张 file_nodes：user_id = POOL_USER_ID(0) 的行就是池内节点，
+// 所以线上库**不需要**为这个功能跑迁移。
 // 为什么不塞进上面那个 snapshot：快照是整包覆盖、上限 256KB，几百个文件的目录树就装不下；
 // 而且改一个文件名要重传整包，两台设备同时改必然互相覆盖。拆成「每人一批节点行」之后，
 // 每次只动自己那一行，冲突面小得多。
@@ -1165,9 +1188,28 @@ function normalizeMime(raw: string): string {
   return raw.split(';')[0].trim().toLowerCase()
 }
 
-/** R2 里的 key。带上 userId 的好处：将来「按用户清理」不用扫全桶，也不会和别人撞 key。 */
+/**
+ * R2 里的 key。
+ *
+ * 私人文件带 userId：将来「按用户清理」不用扫全桶，也不会和别人撞 key。
+ * 公共文件池的 key 用 p/ 前缀、不带 userId：内容属于所有人，谁传的由对象的
+ * customMetadata.uploader 记（配额要退给上传者，见 handleDeleteFiles）。
+ */
 function fileKey(userId: number, nodeId: string): string {
-  return 'u/' + userId + '/' + nodeId
+  return userId === POOL_USER_ID ? 'p/' + nodeId : 'u/' + userId + '/' + nodeId
+}
+
+/**
+ * 从 R2 元数据里读「这份内容是谁传的」（只有公共文件池会写这个字段）。
+ *
+ * 返回 null 表示没有记录 / 不是合法用户 id：调用方自己决定兜底策略。
+ * 用 Number 而不是 parseInt：'12abc' 这种脏值 parseInt 会给出 12，Number 会回 NaN。
+ */
+function readUploader(meta: { customMetadata?: Record<string, string> } | null): number | null {
+  const raw = meta?.customMetadata?.uploader
+  if (raw === undefined) return null
+  const id = Number(raw)
+  return Number.isInteger(id) && id >= 0 ? id : null
 }
 
 /** D1 不支持数组展开成占位符，只能按个数自己拼 '(?, ?, ?)' */
@@ -1380,9 +1422,17 @@ function readFileNode(raw: unknown, index: number): Validated<FileNodePayload> {
     return { ok: false, message: where + '.mime 不是合法的 MIME 类型' }
   }
 
+  // scope 不传 = private：线上可能还挂着旧版前端（浏览器缓存 / 正在滚动的发布），
+  // 它们推上来的节点没有这个字段，不能因此整个同步失败。
+  const rawScope = raw.scope
+  if (rawScope !== undefined && rawScope !== 'private' && rawScope !== 'public') {
+    return { ok: false, message: where + '.scope 只能是 private 或 public' }
+  }
+  const scope: FileScope = rawScope === 'public' ? 'public' : 'private'
+
   // 文件夹的大小恒为 0（schema 里也是这么注释的）：前端传什么都归零，
   // 免得一条「文件夹占 3MB」的脏数据把用量算歪。
-  return { ok: true, value: { id, parentId, name, kind, size: kind === 'folder' ? 0 : size, mime } }
+  return { ok: true, value: { id, parentId, name, kind, size: kind === 'folder' ? 0 : size, mime, scope } }
 }
 
 /** 校验 POST /api/files/nodes 的整个请求体 */
@@ -1440,10 +1490,13 @@ function generateShareToken(): string {
 }
 
 /**
- * GET /api/files/tree —— 拉当前用户的完整目录树。
+ * GET /api/files/tree —— 拉当前用户能看到的完整目录树（个人 + 公共文件池）。
  *
  * 墓碑（deleted = 1）也要返回：另一台设备删掉的东西，本机下次拉树时必须知道
  * 「它没了」，否则会把本地那份当成本地新增又传回来，删了又活。
+ *
+ * 公共文件池的节点也一起返回：池子对所有登录用户可见，前端按 scope 分成两块展示。
+ * 一行 SQL 把两种 scope 一起取，客户端只用一次请求、一次合并，比开第二个接口简单。
  */
 async function handleFileTree(request: Request, env: Env): Promise<Response> {
   const identity = await requireUser(request, env)
@@ -1451,10 +1504,11 @@ async function handleFileTree(request: Request, env: Env): Promise<Response> {
 
   const rows = await env.DB
     .prepare(
-      'SELECT id AS id, parent_id AS parentId, name AS name, kind AS kind, size AS size, mime AS mime, deleted AS deleted, updated_at AS updatedAt ' +
+      'SELECT id AS id, parent_id AS parentId, name AS name, kind AS kind, size AS size, mime AS mime, deleted AS deleted, updated_at AS updatedAt, ' +
+        "CASE WHEN user_id = " + POOL_USER_ID + " THEN 'public' ELSE 'private' END AS scope " +
         // 按更新时间倒序取最新的 5000 行：真的超过上限时，最近改动（以及新传的文件）
         // 不能掉在截断线外，否则表现成「新文件同步不上」。超限本身是契约给定的事实。
-        'FROM file_nodes WHERE user_id = ? ORDER BY updated_at DESC, id ASC LIMIT ?',
+        'FROM file_nodes WHERE user_id = ? OR user_id = ' + POOL_USER_ID + ' ORDER BY updated_at DESC, id ASC LIMIT ?',
     )
     .bind(identity.user.id, MAX_TREE_ROWS)
     .all<CloudNodeRow>()
@@ -1468,6 +1522,7 @@ async function handleFileTree(request: Request, env: Env): Promise<Response> {
     mime: row.mime,
     deleted: Number(row.deleted) === 1,
     updatedAt: Number(row.updatedAt),
+    scope: row.scope === 'public' ? 'public' : 'private',
   }))
   return json({ nodes })
 }
@@ -1504,8 +1559,13 @@ async function handlePushNodes(request: Request, env: Env): Promise<Response> {
 
   // 一次 batch 提交：要么整批都进库，要么一条都不进，不会留下半批数据。
   // ON CONFLICT 的 DO UPDATE 里故意没有 size —— 见上面函数注释。
-  const statements = nodes.map((node) =>
-    db
+  //
+  // scope=public 的节点落进保留的 POOL_USER_ID 名下：池子是「一份目录树、所有人共享」，
+  // 不是每个账号各存一份副本。也正因为如此，任何人都能改名 / 移动池内节点 ——
+  // 这是公共池子的语义，不是权限漏洞；服务端没有「池主」这个概念。
+  const statements = nodes.map((node) => {
+    const ownerId = node.scope === 'public' ? POOL_USER_ID : userId
+    return db
       .prepare(
         'INSERT INTO file_nodes (user_id, id, parent_id, name, kind, size, mime, deleted, updated_at) ' +
           'VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?) ' +
@@ -1513,8 +1573,8 @@ async function handlePushNodes(request: Request, env: Env): Promise<Response> {
           'parent_id = excluded.parent_id, name = excluded.name, kind = excluded.kind, ' +
           'mime = excluded.mime, deleted = 0, updated_at = excluded.updated_at',
       )
-      .bind(userId, node.id, node.parentId, node.name, node.kind, node.size, node.mime, now),
-  )
+      .bind(ownerId, node.id, node.parentId, node.name, node.kind, node.size, node.mime, now)
+  })
   await db.batch(statements)
   return json({ ok: true })
 }
@@ -1543,42 +1603,76 @@ async function handleDeleteFiles(request: Request, env: Env): Promise<Response> 
   const userId = identity.user.id
 
   // 先查这一批里**还活着**的节点：不存在的 id（已经删过）不该重复减配额，
-  // 也不该出现在 deleted 计数里。按 MAX_IN_PARAMS 分块查，避开 D1 的参数上限。
-  const alive: { id: string; kind: string; size: number }[] = []
+  // 也不该出现在 deleted 计数里。个人节点和公共池节点分两路过：
+  // 池内节点的 user_id 恒为 POOL_USER_ID，和当前账号无关。
+  // 按 MAX_IN_PARAMS 分块查，避开 D1 的参数上限。
+  type AliveRow = { id: string; kind: string; size: number }
+  const personalAlive: AliveRow[] = []
+  const poolAlive: AliveRow[] = []
   for (const chunk of chunkIds(ids, MAX_IN_PARAMS)) {
-    const rows = await db
+    const personal = await db
       .prepare(
         'SELECT id AS id, kind AS kind, size AS size FROM file_nodes ' +
           'WHERE user_id = ? AND deleted = 0 AND id IN (' + placeholders(chunk.length) + ')',
       )
       .bind(userId, ...chunk)
-      .all<{ id: string; kind: string; size: number }>()
-    alive.push(...rows.results)
+      .all<AliveRow>()
+    personalAlive.push(...personal.results)
+
+    const pool = await db
+      .prepare(
+        'SELECT id AS id, kind AS kind, size AS size FROM file_nodes ' +
+          'WHERE user_id = ' + POOL_USER_ID + ' AND deleted = 0 AND id IN (' + placeholders(chunk.length) + ')',
+      )
+      .bind(...chunk)
+      .all<AliveRow>()
+    poolAlive.push(...pool.results)
   }
 
   const now = Date.now()
   const statements: D1PreparedStatement[] = []
-  const fileIds: string[] = []
-  let freedBytes = 0
-  for (const row of alive) {
+  const r2Keys: string[] = []
+  // 配额是「每人一本账」：同一个池内文件是谁传的，就把字节退给谁，
+  // 所以先按用户归并，最后每人一条 usageStatement。
+  const refunds = new Map<number, number>()
+  function addRefund(holder: number, bytes: number) {
+    if (bytes <= 0) return
+    refunds.set(holder, (refunds.get(holder) ?? 0) + bytes)
+  }
+
+  for (const row of personalAlive) {
     if (row.kind !== 'file') continue
-    fileIds.push(row.id)
+    r2Keys.push(fileKey(userId, row.id))
     // 退多少字节以 R2 对象的真实大小为准，而不是库里的 size：
     // 库里的 size 可能是客户端在内容传上来之前报的「猜测值」，
     // 拿它减会让配额越删越少（减多了还会把别的文件的空间一起吃掉）。
     try {
       const meta = env.FILES ? await env.FILES.head(fileKey(userId, row.id)) : null
-      freedBytes += meta ? Math.max(0, meta.size) : 0
+      addRefund(userId, meta ? Math.max(0, meta.size) : 0)
     } catch (error) {
       // 读不到元数据就退回库里的大小：宁可少退一点，也不能让 quota 卡死
       console.error('[bettertools] 读 R2 对象大小失败：', row.id, error)
-      freedBytes += Math.max(0, Number(row.size))
+      addRefund(userId, Math.max(0, Number(row.size)))
+    }
+  }
+
+  for (const row of poolAlive) {
+    if (row.kind !== 'file') continue
+    r2Keys.push(fileKey(POOL_USER_ID, row.id))
+    try {
+      const meta = env.FILES ? await env.FILES.head(fileKey(POOL_USER_ID, row.id)) : null
+      // uploader 只写在池内对象上；读不到（对象还没传完 / 被手工删过）就退给
+      // 当前操作者 —— 这是唯一已知的账号，总比让字节永远挂在池子里好。
+      addRefund(readUploader(meta) ?? userId, meta ? Math.max(0, meta.size) : 0)
+    } catch (error) {
+      console.error('[bettertools] 读 R2 对象大小失败：', row.id, error)
+      addRefund(userId, Math.max(0, Number(row.size)))
     }
   }
 
   // 墓碑按块一条 UPDATE 写完（同一块里的 updated_at 用同一个 now，本来也该一样）：
   // 200 个 id 就是 3 条语句，而不是 200 条，batch 的体积小得多。
-  for (const chunk of chunkIds(alive.map((row) => row.id), MAX_IN_PARAMS)) {
+  for (const chunk of chunkIds(personalAlive.map((row) => row.id), MAX_IN_PARAMS)) {
     statements.push(
       db
         .prepare(
@@ -1588,10 +1682,21 @@ async function handleDeleteFiles(request: Request, env: Env): Promise<Response> 
         .bind(now, userId, ...chunk),
     )
   }
+  for (const chunk of chunkIds(poolAlive.map((row) => row.id), MAX_IN_PARAMS)) {
+    statements.push(
+      db
+        .prepare(
+          'UPDATE file_nodes SET deleted = 1, updated_at = ? ' +
+            'WHERE user_id = ' + POOL_USER_ID + ' AND deleted = 0 AND id IN (' + placeholders(chunk.length) + ')',
+        )
+        .bind(now, ...chunk),
+    )
+  }
 
   // 撤分享对**请求里的所有 id** 都做（不只看活着的）：万一库里的状态曾经错位过，
   // 这一步也能把残留的公开链接一并关掉。和写墓碑放在同一个 batch 里，
   // 避免出现「墓碑写了、分享还没撤」的中间态。
+  // 池内文件不支持公开分享（见 handleCreateShare），所以这里只撤当前账号自己的。
   for (const chunk of chunkIds(ids, MAX_IN_PARAMS)) {
     statements.push(
       db
@@ -1602,7 +1707,9 @@ async function handleDeleteFiles(request: Request, env: Env): Promise<Response> 
         .bind(userId, ...chunk),
     )
   }
-  if (freedBytes > 0) statements.push(usageStatement(db, userId, -freedBytes, now))
+  for (const [holder, bytes] of refunds) {
+    statements.push(usageStatement(db, holder, -bytes, now))
+  }
 
   // ids 非空时这里至少有「撤分享」的语句，batch 不会是空数组
   await db.batch(statements)
@@ -1613,17 +1720,17 @@ async function handleDeleteFiles(request: Request, env: Env): Promise<Response> 
   const bucket = env.FILES
   if (bucket) {
     await Promise.all(
-      fileIds.map(async (id) => {
+      r2Keys.map(async (key) => {
         try {
-          await bucket.delete(fileKey(userId, id))
+          await bucket.delete(key)
         } catch (error) {
-          console.error('[bettertools] 删除 R2 对象失败：', id, error)
+          console.error('[bettertools] 删除 R2 对象失败：', key, error)
         }
       }),
     )
   }
 
-  return json({ ok: true, deleted: alive.length })
+  return json({ ok: true, deleted: personalAlive.length + poolAlive.length })
 }
 
 /**
@@ -1656,22 +1763,39 @@ async function handlePutFileContent(request: Request, env: Env, nodeId: string):
   const db = env.DB
   const userId = identity.user.id
 
-  // ③ 跨账号 / 已删除 / 文件夹一律 404：不区分「不存在」和「不是你的」，
-  //    避免这个接口变成探测别人 node id 是否存在的工具。
-  const node = await db
+  // ③ 节点归属：先找自己的，再找公共文件池的。跨账号 / 已删除 / 文件夹一律 404：
+  //    不区分「不存在」和「不是你的」，避免这个接口变成探测别人 node id 是否存在的工具。
+  //    池内节点谁都能传内容（公共池的语义），但配额记在**上传者**头上。
+  let ownerId = userId
+  let node = await db
     .prepare('SELECT kind AS kind, mime AS mime FROM file_nodes WHERE user_id = ? AND id = ? AND deleted = 0')
     .bind(userId, nodeId)
     .first<{ kind: string; mime: string }>()
+  if (!node) {
+    node = await db
+      .prepare(
+        'SELECT kind AS kind, mime AS mime FROM file_nodes WHERE user_id = ' + POOL_USER_ID + ' AND id = ? AND deleted = 0',
+      )
+      .bind(nodeId)
+      .first<{ kind: string; mime: string }>()
+    if (node) ownerId = POOL_USER_ID
+  }
   if (!node || node.kind !== 'file') return json({ error: 'not-found' }, 404)
 
   const now = Date.now()
-  const key = fileKey(userId, nodeId)
+  const key = fileKey(ownerId, nodeId)
+  const isPool = ownerId === POOL_USER_ID
 
   // 旧内容占了多少字节，以 R2 里的对象为准 —— **不能信库里的 node.size**：
   // 客户端在传内容之前会先推一份「猜测的大小」用于列表显示，拿它算 delta 的话，
   // 第一次上传会得到负的增量，配额永远记成 0（库里的 size 和实际占用会脱节）。
   const existing = await bucket.head(key)
   const oldSize = existing ? Math.max(0, existing.size) : 0
+
+  // 池内内容可能换人重传：旧字节退给旧上传者，新字节记在当前账号头上。
+  // 所以当前账号的增量不是「新 - 旧」，而是「新 - 自己旧的那部分」。
+  const oldUploader = isPool ? readUploader(existing) ?? userId : userId
+  const ownOldSize = isPool && oldUploader !== userId ? 0 : oldSize
 
   // 配额有两层：账号自己的配额（管理员可单独设）和全站 10GB 硬上限。
   // 两个都用「声明的大小」先预判，收完流后再按 R2 真实大小复核一遍。
@@ -1680,15 +1804,16 @@ async function handlePutFileContent(request: Request, env: Env, nodeId: string):
   const used = await readUsedBytes(db, userId)
   const userQuota = await readUserQuota(db, userId)
   const siteUsed = await readSiteUsed(db)
-  const declaredDelta = declared - oldSize
-  if (declaredDelta > 0) {
-    if (used + declaredDelta > userQuota) return quotaExceeded(userQuota)
-    if (siteUsed + declaredDelta > SITE_QUOTA_BYTES) return siteQuotaExceeded()
-  }
+  const declaredOwnDelta = declared - ownOldSize
+  const declaredSiteDelta = declared - oldSize
+  if (declaredOwnDelta > 0 && used + declaredOwnDelta > userQuota) return quotaExceeded(userQuota)
+  if (declaredSiteDelta > 0 && siteUsed + declaredSiteDelta > SITE_QUOTA_BYTES) return siteQuotaExceeded()
 
   // request.body 是 ReadableStream，直接交给 R2：50MB 的文件不会在 Worker 内存里堆成一整块。
+  // 只有池内对象带 customMetadata：删除 / 换人重传时靠它把配额退给对的人。
   const written = await bucket.put(key, request.body ?? new ArrayBuffer(0), {
     httpMetadata: { contentType: normalizeMime(node.mime) || 'application/octet-stream' },
+    ...(isPool ? { customMetadata: { uploader: String(userId) } } : {}),
   })
 
   // ④ 再按 R2 记的真实大小复核一次：Content-Length 可以撒谎（声明 1KB 实际 40MB）。
@@ -1699,30 +1824,40 @@ async function handlePutFileContent(request: Request, env: Env, nodeId: string):
     await bucket.delete(key).catch(() => {})
     return payloadTooLarge()
   }
-  const delta = storedSize - oldSize
-  if (delta > 0) {
-    if (used + delta > userQuota) {
-      await bucket.delete(key).catch(() => {})
-      return quotaExceeded(userQuota)
-    }
-    if (siteUsed + delta > SITE_QUOTA_BYTES) {
-      await bucket.delete(key).catch(() => {})
-      return siteQuotaExceeded()
-    }
+  const ownDelta = isPool && oldUploader !== userId ? storedSize : storedSize - ownOldSize
+  const siteDelta = storedSize - oldSize
+  if (ownDelta > 0 && used + ownDelta > userQuota) {
+    await bucket.delete(key).catch(() => {})
+    return quotaExceeded(userQuota)
+  }
+  if (siteDelta > 0 && siteUsed + siteDelta > SITE_QUOTA_BYTES) {
+    await bucket.delete(key).catch(() => {})
+    return siteQuotaExceeded()
   }
 
   // ⑤ 节点大小和用量在同一个 batch 里更新，不会出现「大小写进去了、用量没加」的错位。
-  await db.batch([
+  //    池内换人重传时是两条用量语句：退旧上传者、记新上传者。
+  const statements: D1PreparedStatement[] = [
     db
       .prepare('UPDATE file_nodes SET size = ?, updated_at = ? WHERE user_id = ? AND id = ? AND deleted = 0')
-      .bind(storedSize, now, userId, nodeId),
-    usageStatement(db, userId, delta, now),
-  ])
+      .bind(storedSize, now, ownerId, nodeId),
+  ]
+  if (isPool && oldUploader !== userId && oldSize > 0) {
+    statements.push(usageStatement(db, oldUploader, -oldSize, now))
+  }
+  statements.push(usageStatement(db, userId, ownDelta, now))
+  await db.batch(statements)
 
   return json({ ok: true, size: storedSize })
 }
 
-/** GET /api/files/content/{id} —— 私有下载，只有文件所属账号能读 */
+/**
+ * GET /api/files/content/{id} —— 下载文件内容。
+ *
+ * 私人文件只有所属账号能读；公共文件池的节点任何登录用户都能读。
+ * 先查自己的、再查池子：两个 id 理论上不会重复（客户端生成的是 UUID），
+ * 万一重复，自己的优先，行为和改动前一致。
+ */
 async function handleGetFileContent(request: Request, env: Env, nodeId: string): Promise<Response> {
   const identity = await requireUser(request, env)
   if (isResponse(identity)) return identity
@@ -1731,13 +1866,23 @@ async function handleGetFileContent(request: Request, env: Env, nodeId: string):
   if (!bucket) return storageNotConfigured()
 
   const userId = identity.user.id
-  const node = await env.DB
+  let ownerId = userId
+  let node = await env.DB
     .prepare('SELECT name AS name, mime AS mime FROM file_nodes WHERE user_id = ? AND id = ? AND deleted = 0 AND kind = ?')
     .bind(userId, nodeId, 'file')
     .first<{ name: string; mime: string }>()
+  if (!node) {
+    node = await env.DB
+      .prepare(
+        'SELECT name AS name, mime AS mime FROM file_nodes WHERE user_id = ' + POOL_USER_ID + ' AND id = ? AND deleted = 0 AND kind = ?',
+      )
+      .bind(nodeId, 'file')
+      .first<{ name: string; mime: string }>()
+    if (node) ownerId = POOL_USER_ID
+  }
   if (!node) return json({ error: 'not-found' }, 404)
 
-  const object = await bucket.get(fileKey(userId, nodeId))
+  const object = await bucket.get(fileKey(ownerId, nodeId))
   // 目录里有这条、R2 里没有（内容还没传上来 / 传失败了）也按 404 处理：
   // 「元数据存在但内容没有」对客户端来说就是「这个文件读不到」，没必要发明第四种状态。
   if (!object) return json({ error: 'not-found' }, 404)
@@ -1813,7 +1958,9 @@ async function handleCreateShare(request: Request, env: Env): Promise<Response> 
 
   const userId = identity.user.id
   const db = env.DB
-  // 只能分享自己的、活着的**文件**（文件夹没有内容可分享）
+  // 只能分享自己的、活着的**文件**（文件夹没有内容可分享）。
+  // 公共文件池的文件不开放对外分享：它本来就对所有登录用户可见，
+  // 再生成一个免登录链接属于另一个产品决定，不在这次范围内。
   const node = await db
     .prepare('SELECT 1 AS x FROM file_nodes WHERE user_id = ? AND id = ? AND deleted = 0 AND kind = ?')
     .bind(userId, rawNodeId, 'file')

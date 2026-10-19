@@ -10,6 +10,27 @@
 
 ---
 
+## 2026-10-19 15:52 · 文件管理新增「公共文件池」：所有用户共享，配额记在上传者头上
+
+文件管理顶部多了「我的文件 / 公共文件池」切换。池内是**一棵所有人共享的目录树**：任何登录用户都能新建文件夹、上传、改名、移动、删除，池内文件所有人可下载；上传消耗从**上传者自己的**个人配额里扣。
+
+### 怎么实现（不加表、不跑线上迁移）
+
+- 复用 `file_nodes`，用保留的 `user_id = 0` 表示池内节点（真实账号从 1 开始，AUTOINCREMENT 不会发 0）。线上不需要执行 schema —— 避开了上次 `user_quotas` 那种「先跑表再 push」的部署顺序风险。
+- 池内内容 R2 key 用 `p/{nodeId}`，上传时写 `customMetadata.uploader`；删除 / 换人重传时按它把字节退给真正的上传者，所以配额账始终对得上。
+- 客户端 `FileNode.scope`（缺省 private）区分区域；`listChildren/getStats/searchNodes` 按 scope 过滤；跨区拖动被 `moveNode` 拒绝（返回 `cross`）。
+- 池内文件不开放免登录分享链接（本来所有登录用户可见），分享按钮禁用。
+
+### 验证
+
+- `pnpm build` exit 0。
+- `_files-e2e.mjs` 32/32：新增 12 项覆盖跨账号可见、配额记上传者、换人重传退款、删除退款、墓碑、非法 scope。
+- 浏览器实测：切区域 / 规则说明 / 新建文件夹 / 上传后同步 / bob 换浏览器可见 / 我的文件不混入 / 池内分享禁用。
+
+*涉及文件：worker/index.ts、worker/r2.ts、worker/schema.sql（仅注释）、src/lib/fileCloud.ts、src/lib/fileStore.ts、src/lib/fileSync.ts、src/modules/FilesModule.tsx、src/components/GlobalSearch.tsx、src/App.tsx、src/types.ts、DeveloperLogs/数据接口文档.md*
+
+---
+
 ## 2026-10-19 15:31–15:47 · 用户组管理：全员用量/登录 IP + 每账号配额与 10GB 上限
 
 管理员登录后首页多一张「用户组管理」卡片（和常用工具、文件管理并列），进去能看到所有注册账号的**云盘用量、最近登录时间、IP、注册时间、文件/文件夹/分享数量**；普通用户没有这个入口，但首页会显示自己的一条「我的网盘用量」（已用 / 配额 + 进度条）。访客两者都看不到。

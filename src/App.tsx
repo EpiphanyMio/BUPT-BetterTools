@@ -158,9 +158,9 @@ export default function App() {
   }, [status, isGuest])
 
   // 全局搜索点到文件夹 → 切到文件管理，并把目标文件夹告诉它
-  function jumpToFolder(folderId: string) {
+  function jumpToFolder(folderId: string, scope: 'private' | 'public') {
     // seq 用时间戳：同一个文件夹连点两次，值也不同，FilesModule 那边才知道要再跳一次
-    setFileJump({ folderId, seq: Date.now() })
+    setFileJump({ folderId, scope, seq: Date.now() })
     setActive('files')
   }
 

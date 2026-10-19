@@ -20,7 +20,10 @@
 
 import { isGuest } from './guestMode'
 import { getSessionToken } from './auth'
-import { MAX_FILE_BYTES, fetchContent, type CloudNode } from './fileCloud'
+import { MAX_FILE_BYTES, fetchContent, type CloudNode, type FileScope } from './fileCloud'
+
+// 这个类型定义在 fileCloud（CloudNode 解析的地方），这里转出去方便界面只 import 一处
+export type { FileScope } from './fileCloud'
 
 const DB_NAME = 'better-tools-files'
 // ⚠️ 版本 2 只做一件事：新增 outbox 表。
@@ -42,6 +45,17 @@ export interface FileNode {
   mime: string
   createdAt: number
   updatedAt: number
+  /**
+   * 'private' / 'public'（公共文件池）。缺省视为 private：
+   * 这个字段是后加的，升级前存在 IndexedDB 里的老节点没有它 ——
+   * 把「没有」当成私人文件，老数据处理起来和以前完全一样。
+   */
+  scope?: FileScope
+}
+
+/** 统一读 scope：老数据（没有字段）按私人文件算。 */
+export function scopeOf(node: Pick<FileNode, 'scope'>): FileScope {
+  return node.scope === 'public' ? 'public' : 'private'
 }
 
 export interface FileStats {
@@ -219,12 +233,18 @@ export async function resetFileStore(): Promise<void> {
 // ---------- 对外接口 ----------
 
 /** 列出某个文件夹里的内容。parentId 传空字符串就是根目录。 */
-export async function listChildren(parentId: string): Promise<FileNode[]> {
+export async function listChildren(
+  parentId: string,
+  scope: FileScope = 'private',
+): Promise<FileNode[]> {
   const db = await openDb()
   const tx = db.transaction(NODES, 'readonly')
   const index = tx.objectStore(NODES).index('parentId')
   const rows = (await toPromise(index.getAll(parentId) as IDBRequest<FileNode[]>)) ?? []
-  return rows.sort(compareNodes)
+  // 「我的文件」和「公共文件池」的根目录都是空串，只能靠 scope 区分。
+  // 为什么不给 IndexedDB 加复合索引：老库升级要 bump DB_VERSION 并写迁移，
+  // 而这里每屏最多几千行，内存里过滤一次的成本可以忽略。
+  return rows.filter((node) => scopeOf(node) === scope).sort(compareNodes)
 }
 
 /** 从某个文件夹一路往上找到根，用来画"首页 › 课件 ›"这样的面包屑 */
@@ -249,7 +269,11 @@ export async function getPath(folderId: string): Promise<FileNode[]> {
   return chain
 }
 
-export async function createFolder(name: string, parentId: string): Promise<FileNode> {
+export async function createFolder(
+  name: string,
+  parentId: string,
+  scope: FileScope = 'private',
+): Promise<FileNode> {
   // 访客预览是「只读」的：界面上的禁用只是提示，真正的保证在这一层。
   // 下面每个写操作入口都先问一次 isGuest()。
   // 这里选择**抛错**而不是静默 return —— 调用方已经 catch 并把 message 显示给用户，
@@ -265,6 +289,7 @@ export async function createFolder(name: string, parentId: string): Promise<File
     mime: '',
     createdAt: now,
     updatedAt: now,
+    scope,
   }
 
   const db = await openDb()
@@ -282,6 +307,7 @@ export async function addFile(
   file: File,
   parentId: string,
   overrideName?: string,
+  scope: FileScope = 'private',
 ): Promise<FileNode> {
   // 访客只读：不许上传
   if (isGuest()) throw new Error('访客预览模式下不能修改文件')
@@ -299,6 +325,7 @@ export async function addFile(
     mime: file.type,
     createdAt: now,
     updatedAt: now,
+    scope,
   }
 
   const db = await openDb()
@@ -476,6 +503,7 @@ export async function applyRemoteTree(remote: CloudNode[]): Promise<void> {
         mime: cloud.mime,
         createdAt: cloud.updatedAt,
         updatedAt: cloud.updatedAt,
+        scope: cloud.scope,
       })
       continue
     }
@@ -489,6 +517,7 @@ export async function applyRemoteTree(remote: CloudNode[]): Promise<void> {
       mime: cloud.mime,
       createdAt: existing.createdAt,
       updatedAt: cloud.updatedAt,
+      scope: cloud.scope,
     }
     // 字段都没变就不写：每次同步都无谓写一遍几千行会拖慢启动
     if (
@@ -497,6 +526,7 @@ export async function applyRemoteTree(remote: CloudNode[]): Promise<void> {
       existing.parentId === merged.parentId &&
       existing.size === merged.size &&
       existing.mime === merged.mime &&
+      scopeOf(existing) === merged.scope &&
       existing.updatedAt === merged.updatedAt
     ) {
       continue
@@ -611,7 +641,7 @@ export async function getBlob(id: string): Promise<Blob | null> {
   }
 }
 
-export async function getStats(): Promise<FileStats> {
+export async function getStats(scope: FileScope = 'private'): Promise<FileStats> {
   const db = await openDb()
   const tx = db.transaction(NODES, 'readonly')
   const all = (await toPromise(tx.objectStore(NODES).getAll() as IDBRequest<FileNode[]>)) ?? []
@@ -620,6 +650,9 @@ export async function getStats(): Promise<FileStats> {
   let folderCount = 0
   let bytes = 0
   for (const node of all) {
+    // 默认只统计「我的文件」：首页卡片和文件管理顶部显示的是个人用量，
+    // 公共池里的文件不属于任何一个人（虽然上传时占的是上传者的配额）。
+    if (scopeOf(node) !== scope) continue
     if (node.kind === 'folder') folderCount++
     else {
       fileCount++
@@ -672,15 +705,17 @@ function isDescendant(all: FileNode[], candidateId: string, ancestorId: string):
 /**
  * 把一个文件或文件夹移到另一个文件夹里（targetParentId 传空字符串 = 根目录）。
  *
- * 会拦住两种非法操作：
+ * 会拦住三种非法操作：
  *   same  —— 目标就是它现在所在的文件夹，等于没动
  *   cycle —— 把文件夹移进它自己的子孙里。这会让那段数据从根目录"断开"，
  *            从此谁也走不到，还会在遍历时绕圈。
+ *   cross —— 跨「我的文件 / 公共文件池」移动。两个区域是不同的共享范围，
+ *            拖过去等于把私人文件公开（或反过来），不该由一次拖拽静默完成。
  */
 export async function moveNode(
   id: string,
   targetParentId: string,
-): Promise<'ok' | 'same' | 'cycle'> {
+): Promise<'ok' | 'same' | 'cycle' | 'cross'> {
   // 访客只读：不许移动
   if (isGuest()) throw new Error('访客预览模式下不能修改文件')
   const db = await openDb()
@@ -693,6 +728,13 @@ export async function moveNode(
   if (node.parentId === targetParentId) return 'same'
   if (id === targetParentId) return 'cycle'
   if (node.kind === 'folder' && isDescendant(all, targetParentId, id)) return 'cycle'
+
+  // 只有「跨区域」才需要查目标：同一个区域里拖拽是最常见的路径，不该为它多查一次。
+  if (targetParentId !== '') {
+    const target = all.find((item) => item.id === targetParentId)
+    if (!target) return 'same'
+    if (scopeOf(target) !== scopeOf(node)) return 'cross'
+  }
 
   const writeTx = db.transaction(NODES, 'readwrite')
   const updated: FileNode = { ...node, parentId: targetParentId, updatedAt: Date.now() }
@@ -730,8 +772,13 @@ export interface SearchHit {
   pathNames: string[]
 }
 
-/** 在整个库里按文件名搜索（不区分大小写）。一次查询把每条的所在路径也算好。 */
-export async function searchNodes(keyword: string): Promise<SearchHit[]> {
+/**
+ * 在整个库里按文件名搜索（不区分大小写）。一次查询把每条的所在路径也算好。
+ *
+ * scope 不传 = 两个区域都搜（全局搜索要跨区找东西）；传了就只搜那一块。
+ * 搜索结果里池内文件的路径前面会加上「公共文件池」，用户一眼能看出它不在自己名下。
+ */
+export async function searchNodes(keyword: string, scope?: FileScope): Promise<SearchHit[]> {
   const lower = keyword.trim().toLowerCase()
   if (!lower) return []
 
@@ -749,10 +796,14 @@ export async function searchNodes(keyword: string): Promise<SearchHit[]> {
       names.unshift(parent.name)
       cursor = parent.parentId
     }
+    // 池内节点的父链只到它自己的根（空串），不加前缀的话搜索结果显示「根目录」，
+    // 会让人以为文件在自己名下。前缀当成路径的第一段最自然。
+    if (scopeOf(node) === 'public') names.unshift('公共文件池')
     return names
   }
 
   return all
+    .filter((node) => (scope ? scopeOf(node) === scope : true))
     .filter((node) => node.name.toLowerCase().includes(lower))
     .sort(compareNodes)
     .map((node) => ({ node, pathNames: pathNamesOf(node) }))

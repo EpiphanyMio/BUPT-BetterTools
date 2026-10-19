@@ -11,6 +11,15 @@ export interface R2ObjectMeta {
   httpMetadata?: {
     contentType?: string
   }
+  /**
+   * 自定义元数据（键值都是字符串，总大小 ≤ 2KB）。
+   *
+   * 目前只放一个 uploader：公共文件池的内容不属于某一个账号，
+   * 但配额是记在「谁传的」头上的 —— 删除时要靠它把钱退给对的人。
+   * 为什么不另建一张 D1 表：那需要线上跑 schema，漏跑会让上传 500；
+   * 元数据跟着对象走，天然是原子的，也不增加一次数据库读写。
+   */
+  customMetadata?: Record<string, string>
 }
 
 export interface R2ObjectBody extends R2ObjectMeta {
@@ -26,7 +35,10 @@ export interface R2Bucket {
   put(
     key: string,
     value: ReadableStream | ArrayBuffer | string,
-    options?: { httpMetadata?: { contentType?: string } },
+    options?: {
+      httpMetadata?: { contentType?: string }
+      customMetadata?: Record<string, string>
+    },
   ): Promise<unknown>
 
   /** 读一个对象；不存在返回 null（不是抛错）。 */

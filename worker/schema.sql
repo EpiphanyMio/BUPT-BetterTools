@@ -139,6 +139,13 @@ ALTER TABLE snapshot_v2 RENAME TO snapshot;
 -- 目录树。parent_id 用空字符串表示根目录，和前端 FileNode.parentId 保持一致
 -- （不用 NULL：SQLite 里 NULL 不参与唯一/比较，前端还要到处判空，空串更省事）。
 --
+-- user_id = 0 是**保留的公共文件池**（真实账号从 1 开始，AUTOINCREMENT 不会发 0）：
+-- 池内节点所有登录用户都能看到、能加能删，节点本身不属于某个账号。
+-- 为什么不加一列 scope：SQLite 没有 ADD COLUMN IF NOT EXISTS，加列会让本文件
+-- 失去「可以重复执行」的性质，线上就得先跑一次迁移。用保留 id 不需要任何 DDL。
+-- 池内内容的配额记在「谁传的」那个真实账号上（file_usage），证据存在 R2 对象的
+-- customMetadata.uploader 里 —— 删除时才能把字节退给对的人。
+--
 -- deleted 是「墓碑」而不是真删：一台设备离线删了文件，另一台设备下次拉树时
 -- 必须知道「这条没了」，否则会把它当成本地新增又传回来。墓碑长期保留（一行几十字节）。
 CREATE TABLE IF NOT EXISTS file_nodes (

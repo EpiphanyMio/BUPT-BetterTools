@@ -15,6 +15,16 @@ import { getSessionToken } from './auth'
 export const MAX_FILE_BYTES = 50 * 1024 * 1024
 export const USER_QUOTA_BYTES = 500 * 1024 * 1024
 
+/**
+ * 文件在哪个区域：
+ *   private —— 我的文件，只有自己能看到；
+ *   public  —— 公共文件池，所有登录用户都能看到、能往里放东西。
+ *
+ * 为什么放在这一层定义：fileStore 要 import fileCloud 的类型，反过来会成环；
+ * 而 CloudNode 的解析就在这里，scope 的「默认值」也应该只写一遍。
+ */
+export type FileScope = 'private' | 'public'
+
 const API_BASE = '/api'
 
 // 后端规定一次最多提交 200 条节点 / id，超了整个请求回 400。
@@ -31,6 +41,8 @@ export interface CloudNode {
   // 墓碑：这条节点在云端已经被删了，同步时要照着删本地
   deleted: boolean
   updatedAt: number
+  /** 云端没有这个字段的旧数据一律按私人文件处理（见 parseCloudNode） */
+  scope: FileScope
 }
 
 /** 上传节点元数据时的形状（不含 deleted / updatedAt：这两个由服务端决定） */
@@ -41,6 +53,8 @@ export interface FileNodePayload {
   kind: 'file' | 'folder'
   size: number
   mime: string
+  /** 不传 = private，兼容旧版前端推上来的请求 */
+  scope: FileScope
 }
 
 export interface CloudShare {
@@ -146,6 +160,9 @@ function parseCloudNode(raw: unknown): CloudNode | null {
     mime: typeof raw.mime === 'string' ? raw.mime : '',
     deleted: raw.deleted === true,
     updatedAt,
+    // 旧 worker（还没上公共文件池）不返回 scope：按私人文件处理，不会把
+    // 自己的文件误判成池内文件。
+    scope: raw.scope === 'public' ? 'public' : 'private',
   }
 }
 

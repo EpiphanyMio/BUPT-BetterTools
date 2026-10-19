@@ -30,8 +30,8 @@ const FILE_DEBOUNCE_MS = 140
 interface GlobalSearchProps {
   open: boolean
   onClose: () => void
-  /** 点结果里的文件夹时，跳到文件管理的对应目录 */
-  onOpenFolder: (folderId: string) => void
+  /** 点结果里的文件夹时，跳到文件管理的对应目录（公共文件池要带上 scope） */
+  onOpenFolder: (folderId: string, scope: 'private' | 'public') => void
 }
 
 /** 一条搜索结果。工具和文件合成同一个形状，键盘上下键才好统一处理。 */
@@ -206,7 +206,8 @@ export default function GlobalSearch({ open, onClose, onOpenFolder }: GlobalSear
       }
 
       if (item.node.kind === 'folder') {
-        onOpenFolder(item.node.id)
+        // 池内文件夹要一起带上 scope，否则会跳进「我的文件」里一个同 id 不存在的目录
+        onOpenFolder(item.node.id, item.node.scope === 'public' ? 'public' : 'private')
         onClose()
         return
       }

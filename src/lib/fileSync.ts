@@ -221,6 +221,8 @@ function toPayload(node: FileNode): FileNodePayload {
     kind: node.kind,
     size: node.size,
     mime: node.mime,
+    // 老数据没有 scope → 按 private 推上去，服务端不传也是 private，行为一致
+    scope: node.scope === 'public' ? 'public' : 'private',
   }
 }
 

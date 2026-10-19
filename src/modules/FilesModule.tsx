@@ -33,6 +33,7 @@ import {
   searchNodes,
   uniqueName,
   type FileNode,
+  type FileScope,
   type FileStats,
   type SearchHit,
 } from '../lib/fileStore'
@@ -246,7 +247,15 @@ function NodeRow({
 
 // ------------------------------------------------- 面包屑上的"根目录"（可投放）
 
-function RootDropChip({ active, onClick }: { active: boolean; onClick: () => void }) {
+function RootDropChip({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean
+  label: string
+  onClick: () => void
+}) {
   const { setNodeRef, isOver } = useDroppable({ id: ROOT_DROP_ID })
 
   return (
@@ -263,7 +272,7 @@ function RootDropChip({ active, onClick }: { active: boolean; onClick: () => voi
             : 'text-fg-subtle hover:bg-surface-3')
       }
     >
-      🏠 根目录
+      {label}
     </button>
   )
 }
@@ -502,6 +511,12 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
   const sync = useFileSync()
 
   // 空字符串 = 根目录。带着跳转请求进来时，直接打开目标文件夹。
+  //
+  // scope 是这次改动新增的「区域」：
+  //   private —— 我的文件（原来的全部行为）
+  //   public  —— 公共文件池（所有登录用户共享一棵目录树）
+  // 两个区域共用 currentId / 面包屑 / 搜索框；切换时回到各自的根目录。
+  const [scope, setScope] = useState<FileScope>(jump?.scope ?? 'private')
   const [currentId, setCurrentId] = useState(jump ? jump.folderId : '')
   const [items, setItems] = useState<FileNode[]>([])
   const [path, setPath] = useState<FileNode[]>([])
@@ -534,32 +549,35 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
   // 为什么要区分：这些操作做完也要重新读一遍列表，但列表里已有的内容其实还在。
   // 把它整个换成骨架屏，用户会觉得"页面又重载了" —— 上传一个文件就闪一下整页，很突兀。
   // 只有"首次进入 / 切换文件夹"这种内容真的换了的场景，才值得让骨架屏出现。
-  const refresh = useCallback(async (folderId: string, options?: { silent?: boolean }) => {
-    if (!options?.silent) setListLoading(true)
-    try {
-      const [children, chain, newStats, newQuota] = await Promise.all([
-        listChildren(folderId),
-        getPath(folderId),
-        getStats(),
-        getQuota(),
-      ])
-      setItems(children)
-      setPath(chain)
-      setStats(newStats)
-      setQuota(newQuota)
-      setListError('') // 读成功就清掉上一次的错误
-    } catch (error) {
-      const message = '读取数据失败：' + String(error)
-      setListError(message)
-      // 过渡期也写进 notice：现在的提示条还靠它显示。
-      // 等界面把「错误态」做好之后，这行可以删掉。
-      setNotice(message)
-    } finally {
-      // finally 而不是 try 末尾：抛异常时也必须把"加载中"关掉，
-      // 否则界面会永远停在骨架屏上。
-      setListLoading(false)
-    }
-  }, [])
+  const refresh = useCallback(
+    async (folderId: string, options?: { silent?: boolean }) => {
+      if (!options?.silent) setListLoading(true)
+      try {
+        const [children, chain, newStats, newQuota] = await Promise.all([
+          listChildren(folderId, scope),
+          getPath(folderId),
+          getStats(scope),
+          getQuota(),
+        ])
+        setItems(children)
+        setPath(chain)
+        setStats(newStats)
+        setQuota(newQuota)
+        setListError('') // 读成功就清掉上一次的错误
+      } catch (error) {
+        const message = '读取数据失败：' + String(error)
+        setListError(message)
+        // 过渡期也写进 notice：现在的提示条还靠它显示。
+        // 等界面把「错误态」做好之后，这行可以删掉。
+        setNotice(message)
+      } finally {
+        // finally 而不是 try 末尾：抛异常时也必须把"加载中"关掉，
+        // 否则界面会永远停在骨架屏上。
+        setListLoading(false)
+      }
+    },
+    [scope],
+  )
 
   useEffect(() => {
     void refresh(currentId)
@@ -609,9 +627,11 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     }
   }, [loggedIn, sync.lastSyncedAt])
 
-  // 从「全局搜索」点了一个文件夹跳进来：打开它，并清掉本模块自己的搜索关键词
+  // 从「全局搜索」点了一个文件夹跳进来：切到它所在的区域、打开它，
+  // 并清掉本模块自己的搜索关键词。
   useEffect(() => {
     if (!jump) return
+    setScope(jump.scope ?? 'private')
     setCurrentId(jump.folderId)
     setQuery('')
   }, [jump])
@@ -624,7 +644,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
       return
     }
     let cancelled = false
-    searchNodes(keyword)
+    searchNodes(keyword, scope)
       .then((result) => {
         if (!cancelled) setHits(result)
       })
@@ -634,7 +654,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     return () => {
       cancelled = true
     }
-  }, [query, items])
+  }, [query, items, scope])
 
   // 拖动时只认"文件夹"这类投放目标，而且必须是指针真的压在它上面 ——
   // 否则拖到空白处也会顺手丢进最近的那个文件夹，很反直觉。
@@ -657,6 +677,22 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
 
   // ---------- 选择 ----------
 
+  /**
+   * 切换「我的文件 / 公共文件池」。
+   *
+   * 必须把 currentId 一起清空：两个区域是两棵独立的树，
+   * 上一个区域的文件夹 id 在另一个区域里不存在，留着会打开一个空目录。
+   * 搜索词 / 勾选 / 分享弹窗也一并重置，避免操作到看不见的条目。
+   */
+  function switchScope(next: FileScope) {
+    if (next === scope) return
+    setScope(next)
+    setCurrentId('')
+    setQuery('')
+    setSelected(new Set())
+    setShareNode(null)
+  }
+
   function toggleSelect(id: string) {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -677,7 +713,9 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     if (input === null || !input.trim()) return
 
     const desired = input.trim()
-    const taken = new Set((await listChildren(currentId)).map((n) => n.name.toLowerCase()))
+    const taken = new Set(
+      (await listChildren(currentId, scope)).map((n) => n.name.toLowerCase()),
+    )
 
     let finalName = desired
     if (taken.has(desired.toLowerCase())) {
@@ -691,7 +729,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
 
     setBusy(true)
     try {
-      await createFolder(finalName, currentId)
+      await createFolder(finalName, currentId, scope)
       await refresh(currentId, { silent: true })
       setNotice('已新建文件夹「' + finalName + '」')
     } catch (error) {
@@ -711,7 +749,9 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     try {
       // 先把该文件夹里已用的名字读出来，上传过程中不断累加 ——
       // 这样同一批里的两个同名文件也能各自拿到不同的名字
-      const taken = new Set((await listChildren(currentId)).map((n) => n.name.toLowerCase()))
+      const taken = new Set(
+        (await listChildren(currentId, scope)).map((n) => n.name.toLowerCase()),
+      )
 
       for (const file of Array.from(list)) {
         let name = file.name
@@ -721,7 +761,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
           name = fixed
         }
         taken.add(name.toLowerCase())
-        await addFile(file, currentId, name)
+        await addFile(file, currentId, name, scope)
         added++
       }
 
@@ -764,7 +804,7 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     if (input === null || !input.trim() || input.trim() === node.name) return
 
     const desired = input.trim()
-    const siblings = await listChildren(node.parentId)
+    const siblings = await listChildren(node.parentId, node.scope ?? 'private')
     const taken = new Set(
       siblings.filter((s) => s.id !== node.id).map((s) => s.name.toLowerCase()),
     )
@@ -849,6 +889,10 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
     }
     if (result === 'cycle') {
       setNotice('不能把文件夹移进它自己或它的子文件夹里')
+      return
+    }
+    if (result === 'cross') {
+      setNotice('不能跨「我的文件」和「公共文件池」移动；要公开请重新上传到公共文件池')
       return
     }
 
@@ -945,6 +989,40 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
           </div>
         </header>
 
+        {/* 区域切换：我的文件 / 公共文件池。
+            放在存储说明之前 —— 下面的说明文字是按「当前区域」写的。 */}
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="inline-flex rounded-btn border border-line bg-surface p-1 text-sm shadow-e1">
+            <button
+              type="button"
+              onClick={() => switchScope('private')}
+              className={
+                'rounded-btn px-3 py-1.5 transition ' +
+                (scope === 'private'
+                  ? 'bg-primary-soft font-medium text-primary'
+                  : 'text-fg-subtle hover:bg-surface-3')
+              }
+            >
+              📁 我的文件
+            </button>
+            <button
+              type="button"
+              onClick={() => switchScope('public')}
+              className={
+                'rounded-btn px-3 py-1.5 transition ' +
+                (scope === 'public'
+                  ? 'bg-primary-soft font-medium text-primary'
+                  : 'text-fg-subtle hover:bg-surface-3')
+              }
+            >
+              🌐 公共文件池
+            </button>
+          </div>
+          <span className="text-xs text-fg-subtle">
+            公共文件池：所有登录用户共享，上传占用你自己的配额
+          </span>
+        </div>
+
         {/* 存储位置说明：登录后是"云端 + 本机缓存"，未登录 / 访客是"只在本机"。
             两种情况必须说清楚，否则用户会误判文件到底在不在云端。 */}
         <div
@@ -976,6 +1054,17 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
             </>
           )}
         </div>
+
+        {/* 公共文件池的规则说明：它不是「另一个网盘」，而是大家共用的一块区域。
+            配额那一句必须写清楚，否则用户会以为池子有独立的免费空间。 */}
+        {scope === 'public' && (
+          <div className="mb-4 rounded-btn border border-primary bg-primary-soft px-4 py-3 text-xs leading-relaxed text-fg-muted">
+            <b className="text-fg">公共文件池：所有登录用户共享这一块区域。</b>
+            <br />
+            你上传的文件会从<b>你自己的</b>云盘配额里扣；删除时按 R2 里的真实大小退给上传者。
+            池内内容大家都能看到、也能修改，别放私密文件。
+          </div>
+        )}
 
         {/* 操作栏 */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -1062,7 +1151,11 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
           {/* 面包屑：首页 › 课件 › 大三上。搜索时隐藏。 */}
           {!searching && (
             <nav className="mb-3 flex flex-wrap items-center gap-1 text-sm">
-              <RootDropChip active={currentId === ''} onClick={() => setCurrentId('')} />
+              <RootDropChip
+                active={currentId === ''}
+                label={scope === 'public' ? '🌐 公共文件池' : '🏠 根目录'}
+                onClick={() => setCurrentId('')}
+              />
               {path.map((node) => (
                 <span key={node.id} className="flex items-center gap-1">
                   <span className="text-fg-subtle">›</span>
@@ -1100,7 +1193,9 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
             <p className="rounded-card border border-dashed border-line bg-surface-2 py-14 text-center text-sm text-fg-subtle">
               {searching
                 ? '没有找到名字包含这个关键词的文件或文件夹'
-                : '这里是空的 —— 点上面的「新建文件夹」或「上传文件」开始'}
+                : scope === 'public'
+                  ? '公共文件池还是空的 —— 点上面的「新建文件夹」或「上传文件」，放进去的内容所有登录用户都能看到'
+                  : '这里是空的 —— 点上面的「新建文件夹」或「上传文件」开始'}
             </p>
           ) : (
             <ul className="overflow-hidden rounded-card border border-line bg-surface shadow-e1">
@@ -1116,8 +1211,12 @@ export default function FilesModule({ onBack, onSearch, jump }: FilesModuleProps
                   onRename={handleRename}
                   onDelete={handleDelete}
                   onShare={setShareNode}
-                  canShare={canShare}
-                  shareHint={shareHint}
+                  canShare={canShare && row.node.scope !== 'public'}
+                  shareHint={
+                    row.node.scope === 'public'
+                      ? '公共文件池里的文件对所有登录用户可见，不需要单独分享'
+                      : shareHint
+                  }
                   readOnly={isGuest}
                 />
               ))}

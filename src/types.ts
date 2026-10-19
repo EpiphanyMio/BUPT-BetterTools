@@ -25,6 +25,8 @@ export interface ToolDraft {
 // 因为同一个文件夹连点两次，只有 seq 变了，界面才知道"又收到一次新请求"。
 export interface FileJumpRequest {
   folderId: string
+  /** 目标文件夹在「我的文件」还是「公共文件池」；不传按我的文件处理 */
+  scope?: 'private' | 'public'
   seq: number
 }
 
