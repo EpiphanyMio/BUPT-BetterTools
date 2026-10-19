@@ -1,11 +1,12 @@
 # HANDOFF · 项目交接
 
-> 只写状态与结论，规则见 `AGENTS.md`。更新 2026-10-19 15:31；不确定的标 **待确认**。
+> 只写状态与结论，规则见 `AGENTS.md`。更新 2026-10-19 15:35；不确定的标 **待确认**。
 
 ## 状态
-- `HEAD = 8c67d1d` 线上部署已生效。**工作区有未提交的「用户组管理」改动**（worker + src + 文档）：`pnpm build` exit 0、`scripts/_admin-users-e2e.mjs` 22/22、浏览器实测 23/23 全过。
-- ⚠️ **push 前必须先跑线上 D1 迁移**（新表 `login_records`）：`npx wrangler d1 execute bupt-bettertools-sync --remote --file=worker/schema.sql`。不跑不影响登录/注册，但 `/api/admin/users` 会 500。
-- R2 桶已建（文件管理上云已上线）。`wrangler.jsonc` 里有一个**不是这次改动**的多余 R2 绑定 `bupt_bettertools_files`，push 前**待确认**。
+- `HEAD = 275dc75` 已 push 到 `origin/main`，**线上部署已生效**：HTML 已引用 `index-OkshDJ7s.js`（含「用户组管理」「我的网盘用量」文案），`/api/admin/users` 未登录回 401、错误密码登录回 401，路由正常。
+- 线上 D1 已执行新 schema，`login_records` 表已建；迁移前后 `users` 仍为 1 行，数据未动。
+- 本地验证：`pnpm build` exit 0、`scripts/_admin-users-e2e.mjs` 22/22、浏览器实测 23/23 全过（本地种子服务器，不是线上）。
+- `wrangler.jsonc` 里有一个**不是这次改动**的多余 R2 绑定 `bupt_bettertools_files`，仍**待确认**；`AGENTS.md` 也有未提交改动，都没动。
 - **网页开发暂停**：只有用户说「需要合作」才恢复（本次是用户直接下的任务）。
 
 ## 项目
@@ -18,10 +19,10 @@
 工具箱（增删改/分组/收藏/拖拽/详情/搜索）；文件管理（新建/上传/改名/删除/移动/预览/下载）；Google/Material 风格+跟随系统深浅色+上线；云端同步（D1 单行快照+乐观锁，离线优先）；多用户账号（邀请码注册+管理员面板）；访客只读（数据层拦截+界面禁用+横幅）；文件管理上云（R2 存内容 + D1 存目录树 + outbox 离线队列 + 公开分享链接）；**用户组管理**（管理员首页第三入口：全员用量/最近登录时间/IP；普通用户首页看自己用量）；接口文档；浏览器冒烟 9/9。
 
 ## 进行中
-用户组管理功能已完成本地验证（build / 后端 e2e / 浏览器实测全过），**未提交、未 push**；等用户确认后执行线上 D1 迁移 + 提交推送。
+无。用户组管理已上线，剩管理员用真实账号登录后肉眼核对一次列表（需管理员密码，**待确认**）。
 
 ## 待办
-1. 用户组管理上线：**先跑线上 D1 迁移**（`login_records`），确认 `wrangler.jsonc` 的多余 R2 绑定，再提交 push；上线后线上实测管理员能看到 3 人列表 + IP、普通用户首页有自己用量。
+1. 线上管理员登录后核对：首页三卡三列、用户组管理里能看到全员用量/最近登录/IP；普通账号只看到自己用量。注意**老账号在下一次登录前显示「从未登录」**（`login_records` 从这次上线才开始记）。
 2. 浏览器实测（文件上云遗留）：登录后上传/改名/移动/删除 → 换设备（或清 IndexedDB）登录同账号能看到；断网改文件 → 恢复网络 10 秒内补传；生成分享链接 → 无痕窗口能打开；删除后链接 404；访客/未登录分享按钮禁用。
 3. [ui] 文件模块骨架屏/空态/错误态——数据层已就绪：`listLoading`/`listError`/根节点 `data-list-state`
 4. [core] 删过渡期 `setNotice(message)`（`FilesModule.tsx`），等 #3 完成，否则错误显示两遍
@@ -44,7 +45,7 @@
 不用 UI 框架；不写死颜色、不用 `dark:`；组件不直接碰存储/fetch（存储走 hooks，fetch 只在 `lib/auth.ts`、`lib/sync.ts`、`lib/fileCloud.ts`、`lib/userAdmin.ts`）；快照整包单行+乐观锁，按 `user_id` 隔离，PBKDF2-SHA256 10 万次；同步是加分项，离线照常可用；文件内容走 R2、目录树走 D1，本机 IndexedDB 只做缓存；访客只读两层（`isGuest()` 硬拦截+界面禁用），**登录成功必须清访客标记**；`refresh(id, { silent: true })` 不闪骨架屏；管理员接口一律 `requireAdmin`（401 和 403 分开），前端 `isAdmin` 只决定入口显不显示。
 
 ## 最近提交
-`8c67d1d` 文件管理上云 | `4af160f` 卡片详情按钮 | `57fc9ad` 日志归档 | `1f7ff4f` browser-verify | `0525cbe` 访客只读 | `c0f64ac` 协作触发词 | `64b8f66` 多用户账号 | `2b0c915` 云端同步
+`275dc75` 用户组管理 | `8c67d1d` 文件管理上云 | `4af160f` 卡片详情按钮 | `57fc9ad` 日志归档 | `1f7ff4f` browser-verify | `0525cbe` 访客只读 | `c0f64ac` 协作触发词 | `64b8f66` 多用户账号 | `2b0c915` 云端同步
 
 ## 别读 / 别碰
 `node_modules/`、`dist/`、`.pnpm-*`、`.wrangler/`、`.dsh/`、`.dsh-tmp/`、`.backup-before-google/`、`.dev.vars`（密钥）、`DeveloperLogs/archive/`（按需）、`scripts/_*`（临时）、`pnpm-lock.yaml`（除非改依赖）。
