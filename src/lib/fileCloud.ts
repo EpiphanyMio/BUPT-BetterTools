@@ -76,6 +76,10 @@ const CODE_MESSAGES: Record<string, string> = {
   'not-found': '云端找不到这一项',
   'payload-too-large': '单个文件超过大小上限',
   'quota-exceeded': '云端空间已满，请先删掉一些文件',
+  // 个人配额用完和全站池子用完是两回事：前者找自己删文件或请管理员调额度，
+  // 后者只能由管理员处理（全站 10 GB 是 R2 免费额度，超出会计费）。
+  // 分开展示，用户才知道该找谁。
+  'site-quota-exceeded': '全站云盘空间已满（10 GB 免费额度），请联系管理员',
   'storage-not-configured': '云端存储还没有配置好',
   expired: '分享链接已过期',
 }

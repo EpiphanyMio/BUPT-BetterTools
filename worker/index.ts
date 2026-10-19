@@ -53,7 +53,9 @@
 //   POST   /api/auth/login             → 200 { token, user }
 //   POST   /api/auth/logout   需登录    → 204
 //   GET    /api/auth/me       需登录    → 200 { user }
-//   GET    /api/admin/users   需管理员  → 200 { quota, users }（用户组管理）
+//   GET    /api/admin/users   需管理员  → 200 { defaultQuota, siteQuota, users }（用户组管理）
+//   PUT    /api/admin/users/{id}/quota  需管理员 → 200 { userId, quota }（单独设账号配额）
+//   DELETE /api/admin/users/{id}/quota  需管理员 → 204（删掉覆盖值，恢复默认配额）
 //   GET    /api/invites       需管理员  → 200 { invites }
 //   POST   /api/invites       需管理员  → 201 { code }
 //   DELETE /api/invites/{code} 需管理员 → 204
@@ -62,7 +64,7 @@
 //   GET    /api/files/tree    需登录    → 200 { nodes }（含墓碑）
 //   POST   /api/files/nodes   需登录    → 200 { ok }（一次 ≤200 条）
 //   POST   /api/files/delete  需登录    → 200 { ok, deleted }
-//   GET    /api/files/usage   需登录    → 200 { used, quota }
+//   GET    /api/files/usage   需登录    → 200 { used, quota }（quota 是本人配额）
 //   PUT    /api/files/content/{id}  需登录 → 200 { ok, size }
 //   GET    /api/files/content/{id}  需登录 → 二进制
 //   GET    /api/files/shares  需登录    → 200 { shares }
@@ -168,6 +170,8 @@ interface AdminUserRow {
   lastLoginIp: string | null
   /** file_usage 没行时 COALESCE 成 0，所以正常不会是 null；类型放宽只是为了不用非空断言 */
   usedBytes: number | null
+  /** user_quotas 没行时 COALESCE 成默认配额，所以正常也不是 null */
+  quota: number | null
   fileCount: number
   folderCount: number
   shareCount: number
@@ -184,6 +188,8 @@ interface AdminUser {
   /** 没有 IP 时是空串，展示成「未知」由前端决定 */
   lastLoginIp: string
   usedBytes: number
+  /** 这个账号的存储配额（覆盖值，没有覆盖就是默认配额），单位字节 */
+  quota: number
   fileCount: number
   folderCount: number
   shareCount: number
@@ -275,11 +281,20 @@ const MAX_LOGIN_IP_LENGTH = 64
 
 // ---------------------------------------------------------------- 文件管理常量
 //
-// MAX_FILE_BYTES / USER_QUOTA_BYTES 与前端 src/lib/fileCloud.ts 里的同名常量保持一致
-// （契约第二节）。和 MAX_BODY_BYTES 一样两边各拦一次：前端拦是为了省一次白跑的请求，
-// 后端拦是因为**不能信任客户端** —— 绕过网页直接 curl 一样能打这些接口。
+// MAX_FILE_BYTES / DEFAULT_USER_QUOTA_BYTES / SITE_QUOTA_BYTES 与前端
+// src/lib/fileCloud.ts 里的同名常量保持一致（契约第二节）。和 MAX_BODY_BYTES 一样
+// 两边各拦一次：前端拦是为了省一次白跑的请求，后端拦是因为**不能信任客户端** ——
+// 绕过网页直接 curl 一样能打这些接口。
 const MAX_FILE_BYTES = 50 * 1024 * 1024
-const USER_QUOTA_BYTES = 500 * 1024 * 1024
+
+// 单个账号的默认配额。没在 user_quotas 里写过覆盖行的账号都用这个值；
+// 管理员给某个账号单独设过配额后，以 user_quotas 那一行为准（见 readUserQuota）。
+const DEFAULT_USER_QUOTA_BYTES = 500 * 1024 * 1024
+
+// 全站硬上限：Cloudflare R2 的免费额度是 10GB，超过就按量收费。
+// 所有账号的已用字节加起来不能越过这条线，单个账号的配额也以它为上限 ——
+// 所以它是「全站实际用量」的兜底，而不是每个账号各自的上限。
+const SITE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024
 
 // 一次请求最多带多少个节点 / 删除多少个 id。拖 200 个文件进来已经是极端情况，
 // 再大就不该靠一次请求：D1 的 batch 语句越多，一次失败重试的成本越高。
@@ -790,6 +805,9 @@ async function handleMe(request: Request, env: Env): Promise<Response> {
  *
  * lastLoginAt 走 LEFT JOIN、没有行时回 null：从没登录过的账号要能被前端显示成
  * 「从未登录」，给 0 会被渲染成 1970 年，而且和「真的在 1970 年登录过」分不开。
+ *
+ * quota 同样走 LEFT JOIN user_quotas：没有覆盖行的账号 COALESCE 成默认配额，
+ * 这样接口不需要知道「哪些账号自定义过」，前端拿到的每个账号都直接带着有效配额。
  */
 async function handleListUsers(request: Request, env: Env): Promise<Response> {
   const identity = await requireAdmin(request, env)
@@ -800,16 +818,20 @@ async function handleListUsers(request: Request, env: Env): Promise<Response> {
       'SELECT u.id AS id, u.username AS username, u.is_admin AS isAdmin, u.created_at AS createdAt, ' +
         'l.last_login_at AS lastLoginAt, l.last_login_ip AS lastLoginIp, ' +
         'COALESCE(us.bytes, 0) AS usedBytes, ' +
+        'COALESCE(q.quota_bytes, ?) AS quota, ' +
         "(SELECT COUNT(*) FROM file_nodes n WHERE n.user_id = u.id AND n.deleted = 0 AND n.kind = 'file') AS fileCount, " +
         "(SELECT COUNT(*) FROM file_nodes n WHERE n.user_id = u.id AND n.deleted = 0 AND n.kind = 'folder') AS folderCount, " +
         '(SELECT COUNT(*) FROM file_shares s WHERE s.user_id = u.id AND s.revoked = 0) AS shareCount ' +
         'FROM users u ' +
         'LEFT JOIN login_records l ON l.user_id = u.id ' +
         'LEFT JOIN file_usage us ON us.user_id = u.id ' +
+        'LEFT JOIN user_quotas q ON q.user_id = u.id ' +
         // 注册时间升序：管理员看到的是「账号的加入顺序」，和 id 顺序一致时也能对上号；
         // 同一毫秒注册的两个账号再按 id 兜底，保证分页 / 多次请求的顺序稳定。
         'ORDER BY u.created_at ASC, u.id ASC',
     )
+    // 默认配额用参数绑定而不是拼进 SQL：常量只在这一处定义，改的时候不会漏掉
+    .bind(DEFAULT_USER_QUOTA_BYTES)
     .all<AdminUserRow>()
 
   // 数值统一 Number() 收窄：D1 返回的列类型声明是 unknown，直接透传可能把
@@ -822,12 +844,95 @@ async function handleListUsers(request: Request, env: Env): Promise<Response> {
     lastLoginAt: row.lastLoginAt === null ? null : Number(row.lastLoginAt),
     lastLoginIp: row.lastLoginIp ?? '',
     usedBytes: Number(row.usedBytes ?? 0),
+    quota: Number(row.quota ?? DEFAULT_USER_QUOTA_BYTES),
     fileCount: Number(row.fileCount),
     folderCount: Number(row.folderCount),
     shareCount: Number(row.shareCount),
   }))
 
-  return json({ quota: USER_QUOTA_BYTES, users })
+  // 顶层给「默认配额」和「全站配额」，每个 user 再带自己的 quota：
+  // 前端画容量条需要「分母」，而分母可能是默认值、也可能是覆盖值，两种都从这一份响应里拿。
+  // 不再保留旧的顶层 quota —— 它会和「每用户配额」混淆，前端已经同步改。
+  return json({ defaultQuota: DEFAULT_USER_QUOTA_BYTES, siteQuota: SITE_QUOTA_BYTES, users })
+}
+
+// /api/admin/users/{id}/quota 的路径前缀 / 后缀。单独写成常量，
+// 路由匹配和 id 解析用同一份，不会出现改了一处忘了另一处。
+const ADMIN_QUOTA_PATH_PREFIX = '/api/admin/users/'
+const ADMIN_QUOTA_PATH_SUFFIX = '/quota'
+
+/**
+ * 从 /api/admin/users/{id}/quota 里取出 id。
+ *
+ * 只接受纯数字（/^\d+$/）且大于 0：id 是自增主键，0 / 负数 / 带小数点的形状
+ * 都不可能对应真实用户，直接当成「这条路径不存在」回 404。
+ * 为什么不 Number() 一把梭：Number('1.5')、Number('1e3')、Number(' 1') 都能转出「合法」数字，
+ * 放过去就会出现「路径写法无关紧要」的错觉，也会让 id 的契约变得含糊。
+ * 另外用 Number.isSafeInteger 兜住超大数字（超过 2^53 会丢精度，转出来可能撞到别的 id）。
+ */
+function readAdminQuotaUserId(path: string): number | null {
+  if (!path.startsWith(ADMIN_QUOTA_PATH_PREFIX) || !path.endsWith(ADMIN_QUOTA_PATH_SUFFIX)) return null
+  const raw = path.slice(ADMIN_QUOTA_PATH_PREFIX.length, path.length - ADMIN_QUOTA_PATH_SUFFIX.length)
+  if (!/^\d+$/.test(raw)) return null
+  const id = Number(raw)
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+/**
+ * PUT /api/admin/users/{id}/quota —— 给某个账号单独设配额。
+ *
+ * quota 允许 0：0 表示「这个账号不能再上传」，是一个有意义的设置（比如临时冻结上传），
+ * 所以不拿「必须大于 0」来卡它。上限是全站配额：单账号配额超过全站上限没有意义，
+ * 而且会让前端的容量条画出超过 100% 的进度。
+ *
+ * 先校验 quota 再查用户：请求本身的形状错了（400）比「用户不存在」（404）更根本，
+ * 前端拿到 400 应该改输入，拿到 404 应该刷新列表，两种处理完全不同。
+ */
+async function handlePutUserQuota(request: Request, env: Env, userId: number): Promise<Response> {
+  const identity = await requireAdmin(request, env)
+  if (isResponse(identity)) return identity
+
+  const payload = await readJson(request)
+  if (!payload.ok) return payload.response
+  if (!isRecord(payload.value)) return badRequest('请求体必须是一个 JSON 对象')
+
+  const quota = payload.value.quota
+  if (typeof quota !== 'number' || !Number.isInteger(quota) || quota < 0 || quota > SITE_QUOTA_BYTES) {
+    return badRequest('quota 必须是 0 到 ' + formatQuota(SITE_QUOTA_BYTES) + ' 之间的整数')
+  }
+
+  const target = await env.DB.prepare('SELECT id AS id FROM users WHERE id = ?').bind(userId).first<{ id: number }>()
+  if (!target) return json({ error: 'not-found' }, 404)
+
+  // UPSERT：第一次设置插入一行，之后再设置就覆盖。updated_at 由服务端写，
+  // 客户端不参与 —— 它只是给管理员看的「这行设置是什么时候改的」。
+  await env.DB
+    .prepare(
+      'INSERT INTO user_quotas (user_id, quota_bytes, updated_at) VALUES (?, ?, ?) ' +
+        'ON CONFLICT(user_id) DO UPDATE SET quota_bytes = excluded.quota_bytes, updated_at = excluded.updated_at',
+    )
+    .bind(userId, quota, Date.now())
+    .run()
+
+  return json({ userId, quota })
+}
+
+/**
+ * DELETE /api/admin/users/{id}/quota —— 删掉覆盖行，该账号恢复默认配额。
+ *
+ * 没有覆盖行也回 204：这个操作的语义是「让这个账号回到默认」，已经是默认时
+ * 再删一次没有任何变化，不该报错 —— 前端可以放心重试（和删已撤销的分享不同，
+ * 那里 404 是因为「链接不存在」，这里的目标是「配置状态」而不是某一行数据）。
+ */
+async function handleDeleteUserQuota(request: Request, env: Env, userId: number): Promise<Response> {
+  const identity = await requireAdmin(request, env)
+  if (isResponse(identity)) return identity
+
+  const target = await env.DB.prepare('SELECT id AS id FROM users WHERE id = ?').bind(userId).first<{ id: number }>()
+  if (!target) return json({ error: 'not-found' }, 404)
+
+  await env.DB.prepare('DELETE FROM user_quotas WHERE user_id = ?').bind(userId).run()
+  return noContent()
 }
 
 // ---------------------------------------------------------------- 邀请码
@@ -1105,8 +1210,36 @@ function payloadTooLarge(): Response {
   return json({ error: 'payload-too-large', message: '单个文件不能超过 50 MB' }, 413)
 }
 
-function quotaExceeded(): Response {
-  return json({ error: 'quota-exceeded', message: '账号空间不足（上限 500 MB）' }, 413)
+/**
+ * 把字节数格式化成「500 MB」这种给用户看的单位，只用于错误文案。
+ *
+ * 为什么不在文案里写死「500 MB」：每个人的配额可能被管理员改过，
+ * 文案里写死的数字会和实际限制对不上，用户就会觉得「明明没到 500MB 为什么被拦」。
+ * 整数不带小数（500 MB / 10 GB），有零头才留一位（1.5 GB），读起来不啰嗦。
+ */
+function formatQuota(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = Math.max(0, bytes)
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  const text = Number.isInteger(value) ? String(value) : value.toFixed(1)
+  return text + ' ' + units[unit]
+}
+
+/** 个人配额超限：文案带上这个账号的真实上限，前端可以直接展示 */
+function quotaExceeded(quota: number): Response {
+  return json({ error: 'quota-exceeded', message: '账号空间不足（上限 ' + formatQuota(quota) + '）' }, 413)
+}
+
+/**
+ * 全站配额超限：这是所有账号共享的 R2 免费额度，不是某个人的问题，
+ * 所以文案固定写 10 GB 并让用户去找管理员 —— 个人改小自己的文件也未必马上有空位。
+ */
+function siteQuotaExceeded(): Response {
+  return json({ error: 'site-quota-exceeded', message: '全站云盘空间已满（10 GB 免费额度），请联系管理员' }, 413)
 }
 
 /**
@@ -1147,6 +1280,34 @@ function downloadHeaders(mime: string, name: string): Record<string, string> {
 async function readUsedBytes(db: D1Database, userId: number): Promise<number> {
   const row = await db.prepare('SELECT bytes AS bytes FROM file_usage WHERE user_id = ?').bind(userId).first<{ bytes: number }>()
   return row ? Math.max(0, Number(row.bytes)) : 0
+}
+
+/**
+ * 读某个账号的配额；user_quotas 没有这一行就回默认配额。
+ *
+ * 「没有行 = 用默认值」是 schema.sql 里就定好的语义，所以这里不需要区分
+ * 「从没设置过」和「删除后恢复默认」—— 两者在库里都是没有行，行为也该一样。
+ */
+async function readUserQuota(db: D1Database, userId: number): Promise<number> {
+  const row = await db.prepare('SELECT quota_bytes AS quotaBytes FROM user_quotas WHERE user_id = ?').bind(userId).first<{ quotaBytes: number }>()
+  return row ? Math.max(0, Number(row.quotaBytes)) : DEFAULT_USER_QUOTA_BYTES
+}
+
+/**
+ * 读全站实际用量：file_usage.bytes 的总和。
+ *
+ * 为什么只 SUM file_usage、不看 file_nodes.size：
+ *   ① file_nodes 里有墓碑（删掉但保留的行），它们的 size 还留在表里；
+ *   ② 客户端会在传内容之前先推一个「猜测的 size」，库里的 size 和真实占用会短暂脱节。
+ *   用 file_nodes 求和会把这两类都算进去，数字只会偏大。file_usage 是上传 / 删除时
+ *   按 R2 真实大小维护的账本，是唯一和实际占用一致的数。
+ *
+ * COALESCE 兜住「一个账号都没传过文件」时 SUM 返回 NULL 的情况；
+ * MAX(0, ...) 和读单账号用量一样，是对「库里的数万一错位」的兜底。
+ */
+async function readSiteUsed(db: D1Database): Promise<number> {
+  const row = await db.prepare('SELECT COALESCE(SUM(bytes), 0) AS used FROM file_usage').first<{ used: number }>()
+  return row ? Math.max(0, Number(row.used)) : 0
 }
 
 /**
@@ -1512,8 +1673,18 @@ async function handlePutFileContent(request: Request, env: Env, nodeId: string):
   const existing = await bucket.head(key)
   const oldSize = existing ? Math.max(0, existing.size) : 0
 
+  // 配额有两层：账号自己的配额（管理员可单独设）和全站 10GB 硬上限。
+  // 两个都用「声明的大小」先预判，收完流后再按 R2 真实大小复核一遍。
+  // 为什么只在 delta > 0 时判断：重传更小的文件 / 覆盖会让 delta ≤ 0，
+  // 这时用量只会减少，不该被配额拦住（否则一个已经超额的账号连删内容都做不到）。
   const used = await readUsedBytes(db, userId)
-  if (declared - oldSize > 0 && used + (declared - oldSize) > USER_QUOTA_BYTES) return quotaExceeded()
+  const userQuota = await readUserQuota(db, userId)
+  const siteUsed = await readSiteUsed(db)
+  const declaredDelta = declared - oldSize
+  if (declaredDelta > 0) {
+    if (used + declaredDelta > userQuota) return quotaExceeded(userQuota)
+    if (siteUsed + declaredDelta > SITE_QUOTA_BYTES) return siteQuotaExceeded()
+  }
 
   // request.body 是 ReadableStream，直接交给 R2：50MB 的文件不会在 Worker 内存里堆成一整块。
   const written = await bucket.put(key, request.body ?? new ArrayBuffer(0), {
@@ -1522,15 +1693,22 @@ async function handlePutFileContent(request: Request, env: Env, nodeId: string):
 
   // ④ 再按 R2 记的真实大小复核一次：Content-Length 可以撒谎（声明 1KB 实际 40MB）。
   //    走到这里说明客户端在骗人，宁可把这对象删掉、让这次上传失败，也不能让配额被绕过。
+  //    个人配额和全站上限都要复核，只查一个等于留下另一半的绕过口。
   const storedSize = readR2ObjectSize(written, declared)
   if (storedSize > MAX_FILE_BYTES) {
     await bucket.delete(key).catch(() => {})
     return payloadTooLarge()
   }
   const delta = storedSize - oldSize
-  if (delta > 0 && used + delta > USER_QUOTA_BYTES) {
-    await bucket.delete(key).catch(() => {})
-    return quotaExceeded()
+  if (delta > 0) {
+    if (used + delta > userQuota) {
+      await bucket.delete(key).catch(() => {})
+      return quotaExceeded(userQuota)
+    }
+    if (siteUsed + delta > SITE_QUOTA_BYTES) {
+      await bucket.delete(key).catch(() => {})
+      return siteQuotaExceeded()
+    }
   }
 
   // ⑤ 节点大小和用量在同一个 batch 里更新，不会出现「大小写进去了、用量没加」的错位。
@@ -1567,12 +1745,13 @@ async function handleGetFileContent(request: Request, env: Env, nodeId: string):
   return new Response(object.body, { headers: downloadHeaders(node.mime, node.name) })
 }
 
-/** GET /api/files/usage —— 当前账号已用 / 总配额 */
+/** GET /api/files/usage —— 当前账号已用 / 该账号的配额（管理员可能单独设过） */
 async function handleFileUsage(request: Request, env: Env): Promise<Response> {
   const identity = await requireUser(request, env)
   if (isResponse(identity)) return identity
   const used = await readUsedBytes(env.DB, identity.user.id)
-  return json({ used, quota: USER_QUOTA_BYTES })
+  const quota = await readUserQuota(env.DB, identity.user.id)
+  return json({ used, quota })
 }
 
 /** GET /api/files/shares —— 当前账号仍然有效的分享链接 */
@@ -1767,6 +1946,21 @@ async function route(request: Request, env: Env): Promise<Response> {
   // ---- 用户组管理（管理员） ----
   // 单独一个前缀而不是塞进 /api/auth/：它跟「我是谁」无关，是管理员看**别人**的数据，
   // 前端的权限判断也按 /api/admin/ 前缀走，混进 auth 组会让两件事的边界变模糊。
+
+  // 账号配额：/api/admin/users/{id}/quota。
+  // 必须放在精确匹配的 /api/admin/users 前面，理由有两条：
+  //   ① 路由表是按顺序匹配的，「更具体的路径先匹配」是这里唯一能保证的规则；
+  //   ② 配额路径是 /api/admin/users 的**子路径**，将来谁把精确匹配换成 startsWith，
+  //      没有这一条就会把配额请求错当成「列用户」。
+  if (path.startsWith('/api/admin/users/')) {
+    const quotaUserId = readAdminQuotaUserId(path)
+    // 形状不对（不是 <正整数>/quota）等于这条路径不存在，和未知 /api/* 一样回 404
+    if (quotaUserId === null) return json({ error: 'not-found' }, 404)
+    if (request.method === 'PUT') return handlePutUserQuota(request, env, quotaUserId)
+    if (request.method === 'DELETE') return handleDeleteUserQuota(request, env, quotaUserId)
+    // 同一个路径支持 PUT / DELETE 两种方法，405 的 allow 要一起列出来
+    return methodNotAllowed('PUT, DELETE')
+  }
   if (path === '/api/admin/users') {
     if (request.method !== 'GET') return methodNotAllowed('GET')
     return handleListUsers(request, env)

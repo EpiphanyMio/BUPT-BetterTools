@@ -10,7 +10,7 @@
 
 ---
 
-## 2026-10-19 15:31 · 用户组管理：管理员看全员用量/登录 IP，普通用户看自己用量
+## 2026-10-19 15:31–15:47 · 用户组管理：全员用量/登录 IP + 每账号配额与 10GB 上限
 
 管理员登录后首页多一张「用户组管理」卡片（和常用工具、文件管理并列），进去能看到所有注册账号的**云盘用量、最近登录时间、IP、注册时间、文件/文件夹/分享数量**；普通用户没有这个入口，但首页会显示自己的一条「我的网盘用量」（已用 / 配额 + 进度条）。访客两者都看不到。
 
@@ -36,7 +36,20 @@ SQLite 没有 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，而 `schema.sql` 必�
 - 浏览器实测 23 项全过：管理员三卡三列 + 列表数据正确；普通用户有自己用量、无管理员入口；访客两者都没有；窄屏切换成卡片布局。
 - `pnpm build` exit 0（64 模块）。
 
-*涉及文件：`worker/schema.sql`、`worker/index.ts`、`src/types.ts`、`src/lib/userAdmin.ts`（新增）、`src/modules/UserAdminModule.tsx`（新增）、`src/components/Home.tsx`、`src/App.tsx`、`DeveloperLogs/数据接口文档.md`*
+### 每账号配额 + 全站 10GB 上限（15:42 追加）
+
+「开发者设置」里可以给每个账号单独设配额（单位 MB，0–10240），不设就用默认 500MB；「恢复默认」等于删掉覆盖行。全站总配额是 10GB —— 这是 Cloudflare R2 的免费额度，超出会按量计费，所以它同时是**实际用量的硬上限**，不只是页面上的一个数字。
+
+- **存哪**：`user_quotas(user_id 主键, quota_bytes, updated_at)`。没有行 = 用默认值 —— 不把默认值存成行，将来调整默认值时，没自定义过的账号会自动跟着变。
+- **上传两层校验**：个人 `used + delta ≤ 账号配额`、全站 `SUM(file_usage.bytes) + delta ≤ 10GB`；收流前按 `Content-Length`、收流后按 R2 真实大小各查一次；`delta ≤ 0`（重传更小文件 / 覆盖）不拦，否则超额账号连减小占用都做不到。
+- **全站用量只 SUM `file_usage`**：`file_nodes.size` 里既有墓碑、又有客户端上传前猜的大小，拿它求和只会偏大。
+- **接口**：`GET /api/admin/users` 返回 `{ defaultQuota, siteQuota, users[].quota }`；`PUT/DELETE /api/admin/users/{id}/quota` 修改 / 恢复，全部 `requireAdmin`。超个人 `413 quota-exceeded`（文案带该账号真实上限），超全站 `413 site-quota-exceeded`。
+- **已分配额度之和超过 10GB 时只警告、不拦配置**：额度是上限不是预留，真正触发拒绝的是实际用量。管理员把某人配额调到低于已用量也不会删文件，只拦后续增长。
+- ⚠️ `user_quotas` 表缺失时上传会 500（这一点比 `login_records` 严格），**必须先执行 schema.sql 再 push**。
+
+验证：后端 65 项断言（含配额 PUT/DELETE、非法值、个人/全站超限、schema 幂等）+ 文件接口回归 22 项；浏览器 37 项全过（10GB 概览、保存/恢复默认/非法输入、普通用户读到新配额、窄屏）。`pnpm build` exit 0（64 模块）。
+
+*涉及文件：`worker/schema.sql`、`worker/index.ts`、`src/types.ts`、`src/lib/userAdmin.ts`（新增）、`src/modules/UserAdminModule.tsx`（新增）、`src/components/Home.tsx`、`src/App.tsx`、`src/lib/fileCloud.ts`、`DeveloperLogs/数据接口文档.md`*
 
 ---
 

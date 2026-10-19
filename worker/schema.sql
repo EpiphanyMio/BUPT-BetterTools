@@ -206,3 +206,26 @@ CREATE TABLE IF NOT EXISTS login_records (
   last_login_at INTEGER NOT NULL,
   last_login_ip TEXT    NOT NULL DEFAULT ''
 );
+
+-- ---------------------------------------------------------------- 每用户配额（用户组管理用）
+--
+-- 管理员可以给单个账号单独设配额，没设过的账号用默认值（代码里的
+-- DEFAULT_USER_QUOTA_BYTES，目前 500MB）。
+--
+-- 为什么**不把默认值存成一行**：
+--   「没有行」本身就是「用默认配额」的表达。这样以后管理员把默认值从 500MB 调成 1GB，
+--   所有没自定义过的账号会自动跟着变 —— 如果给每个账号都写一行默认值，
+--   改默认值就得把全表改一遍，而且再也分不清哪些行是管理员主动设的、
+--   哪些只是当初抄进来的默认值。
+--
+-- 为什么 user_id 直接当主键：
+--   每个账号最多一行覆盖值，写入用 INSERT ... ON CONFLICT(user_id) DO UPDATE 一句完成；
+--   删除这一行就是「恢复默认」，不需要额外的 is_default 标记。
+--
+-- 表名和 login_records 一样用 CREATE TABLE IF NOT EXISTS：不写 ALTER TABLE，
+-- 整个文件才能重复执行（理由见上面 login_records 那段）。
+CREATE TABLE IF NOT EXISTS user_quotas (
+  user_id     INTEGER PRIMARY KEY,
+  quota_bytes INTEGER NOT NULL,              -- 该账号的配额上限（字节）
+  updated_at  INTEGER NOT NULL               -- 最近一次修改时间，服务端写
+);

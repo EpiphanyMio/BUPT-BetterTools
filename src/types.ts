@@ -140,14 +140,24 @@ export interface AdminUser {
   fileCount: number             // 文件数
   folderCount: number           // 文件夹数
   shareCount: number            // 公开分享链接数
+  // 这个账号自己的配额（字节）。为什么配额是"每人一份"而不是全站统一：
+  // 管理员需要按账号分配空间（比如给常用的人多批一点、给测试号清零），
+  // 全站统一值表达不了这种差异。不带这个字段就分不清哪一行超额了。
+  quota: number
 }
 
 // GET /api/admin/users 的完整响应。
 //
-// 为什么 quota 放在顶层、不放进每个用户对象：配额是站点级配置，所有账号一样。
-// 每行各带一份不仅浪费流量，还会出现"同一份响应里两行配额不一样"这种无法解释的状态。
+// 为什么是三个字段而不是一个 quota：
+//   siteQuota    —— 全站池子的上限（10 GB），决定"总量还能装多少"；
+//   defaultQuota —— 没单独设置过的账号用的默认额度（500 MB），
+//                   "恢复默认"按钮和输入框占位都靠它；
+//   users[].quota—— 每个账号实际生效的个人额度。
+// 只返回其中一个，页面就没法同时解释"为什么这个人是 500 MB、全站却写着 10 GB"。
+// 注意 quota 现在在用户行里，顶层不再有统一配额字段。
 export interface AdminUsersResult {
   users: AdminUser[]
-  quota: number                 // 单账号云盘配额（字节）
+  defaultQuota: number          // 默认单账号配额（字节）
+  siteQuota: number             // 全站总配额（字节）
 }
 
