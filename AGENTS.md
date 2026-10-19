@@ -48,6 +48,29 @@ Node 用的是系统那份 `C:\Program Files\nodejs`（v24.21.0）。
 
 **改完必须验证**：`pnpm build` 必须通过；必要时再用开发服务器确认新模块能编译。
 
+**浏览器端验证一律用 `scripts/browser-verify.mjs`，不要每次重写无头 Chrome 的 CDP 样板。**
+之前同一个对话里重写了八九遍「启动 Chrome → 连调试端口 → 发命令 → 轮询判断」，纯浪费 token。
+
+```js
+import { openBrowser, createChecks } from './browser-verify.mjs'
+
+const page = await openBrowser({ url: 'http://localhost:5173/', port: 9400 })
+const t = createChecks()
+await page.waitText('登录')                       // 等页面出现某段文字（比 sleep 可靠）
+t.ok('能打开', await page.has('登录'))            // 断言
+await page.clickText('访客预览')                  // 按文字点按钮
+await page.fillByPlaceholder('用户名', 'abc')     // 填输入框（React 受控组件也能用）
+await page.storage('better-tools:tools')          // 读 localStorage 并 JSON.parse
+await page.storageRaw('better-tools:guest-mode')  // 读原始字符串（标记类用它）
+page.reload() / page.setViewport(414, 896, true) / page.screenshot('x.png')
+t.report()                                        // 有失败会 exitCode=1
+await page.close()
+```
+
+- 跑**线上站点**必须加代理：`openBrowser({ url: SITE, proxy: 'http://127.0.0.1:7897' })`
+  —— 本机 DNS 对 `*.workers.dev` 有污染，直连必超时。
+- 该文件用 `stdio: 'ignore'` 启动 Chrome（受限沙箱禁止管道，用 pipe 会 spawn EPERM）。
+
 ## 4. 代码约定
 
 - 注释与界面文案一律**中文**；注释解释「为什么这么做」。
