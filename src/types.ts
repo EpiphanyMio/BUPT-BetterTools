@@ -119,3 +119,35 @@ export interface Invite {
   usedAt: number | null    // 使用时间（毫秒时间戳）；没用过是 null
 }
 
+// ---------------------------------------------------------------- 用户组管理
+//
+// 下面这两样只给「用户组管理」用（src/lib/userAdmin.ts、src/modules/UserAdminModule.tsx）。
+// 形状必须和 worker/ 的 GET /api/admin/users 契约一致 —— 前后端共用同一份约定。
+
+// 一个注册用户在管理员视角下的全貌。
+//
+// 为什么把用量、文件数、登录信息全塞进同一行，而不是只给用户名：
+//   管理员打开这个页面通常是为了排查"云盘谁占满了"或"这个账号最近有没有异常登录"，
+//   如果还要再点开每个用户，一次排查就得多发十几个请求。接口一次给全，页面才能一眼扫完。
+export interface AdminUser {
+  id: number
+  username: string
+  isAdmin: boolean
+  createdAt: number             // 注册时间（毫秒时间戳）
+  lastLoginAt: number | null    // 最近登录时间；null 表示从未登录
+  lastLoginIp: string           // 最近登录 IP；空字符串表示没有记录
+  usedBytes: number             // 云盘已用字节数
+  fileCount: number             // 文件数
+  folderCount: number           // 文件夹数
+  shareCount: number            // 公开分享链接数
+}
+
+// GET /api/admin/users 的完整响应。
+//
+// 为什么 quota 放在顶层、不放进每个用户对象：配额是站点级配置，所有账号一样。
+// 每行各带一份不仅浪费流量，还会出现"同一份响应里两行配额不一样"这种无法解释的状态。
+export interface AdminUsersResult {
+  users: AdminUser[]
+  quota: number                 // 单账号云盘配额（字节）
+}
+

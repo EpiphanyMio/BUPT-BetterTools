@@ -9,9 +9,11 @@ import { useEffect, useState } from 'react'
 import { getStats } from '../lib/fileStore'
 import { formatBytes } from '../lib/fileUtils'
 import { readToolCounts } from '../hooks/useTools'
+import { fetchUsage, type CloudUsage } from '../lib/fileCloud'
+import { useAuth } from '../hooks/useAuth'
 
 // 所有模块的名字集中在这里，App.tsx 也用它
-export type ModuleId = 'tools' | 'files'
+export type ModuleId = 'tools' | 'files' | 'admin'
 
 interface HomeProps {
   onOpen: (module: ModuleId) => void
@@ -24,9 +26,19 @@ interface HomeProps {
 const GOOGLE_COLORS = ['#4285f4', '#ea4335', '#fbbc04', '#34a853']
 
 export default function Home({ onOpen, onSearch }: HomeProps) {
+  // 登录状态决定两件事：管理员多一张「用户组管理」卡片，已登录用户多一条「我的网盘用量」。
+  // 为什么用 status 而不是 isGuest 判断：访客只是"没登录也放行主界面"，
+  // 他的 status 仍然是 anonymous，和未登录在数据可用性上没有区别。
+  const { status, user, isAdmin } = useAuth()
+
   // 工具的个数直接从浏览器本地读一次，不需要挂载整个工具箱
   const [toolCounts] = useState(() => readToolCounts())
   const [fileInfo, setFileInfo] = useState('读取中…')
+
+  // 云端用量三态：undefined = 还在读，null = 读不到，对象 = 读到了。
+  // 用一个 state 而不是 loading + data 两个，是为了避免出现"既在加载又有数据"这种
+  // 两个变量打架的状态；类型上也只有三种可能。
+  const [usage, setUsage] = useState<CloudUsage | null | undefined>(undefined)
 
   // 文件数量要从 IndexedDB 查，是异步的
   useEffect(() => {
@@ -40,6 +52,29 @@ export default function Home({ onOpen, onSearch }: HomeProps) {
       )
       .catch(() => setFileInfo('暂时读不到'))
   }, [])
+
+  // 云端用量只在"已登录"时才去问。用户 id 进依赖数组：
+  // 同一台设备换账号后（A 退出、B 登录），必须重新拉一次，
+  // 否则界面上会留着上一个人用量的旧数字。
+  useEffect(() => {
+    if (status !== 'authenticated') {
+      // 退出登录后立刻清掉，别把上一个人的用量留在屏幕上
+      setUsage(undefined)
+      return
+    }
+
+    let alive = true
+    setUsage(undefined)
+    // fetchUsage 自己吞掉所有失败并返回 null（未登录 / 断网 / 格式不对），
+    // 所以这里不需要 catch；只需要在组件卸载后别再用旧结果写 state。
+    void fetchUsage().then((next) => {
+      if (alive) setUsage(next)
+    })
+
+    return () => {
+      alive = false
+    }
+  }, [status, user?.id])
 
   const cards = [
     {
@@ -59,6 +94,23 @@ export default function Home({ onOpen, onSearch }: HomeProps) {
       meta: fileInfo,
       accent: GOOGLE_COLORS[3],
     },
+    // 管理员专属入口。
+    // 为什么是"不 push 这张卡片"而不是"渲染出来再禁用/隐藏"：
+    //   非管理员点进去只会被服务端回 403，一个永远用不了的功能摆在首页，
+    //   只会让人以为网站坏了。所以从这里就不生成 —— 普通用户的网格里
+    //   仍然只有两张卡片，不会空出一个格子。
+    ...(isAdmin
+      ? [
+          {
+            id: 'admin' as ModuleId,
+            icon: '👥',
+            title: '用户组管理',
+            desc: '查看所有注册用户的网盘用量、最近登录时间和 IP',
+            meta: '仅管理员可见',
+            accent: GOOGLE_COLORS[1],
+          },
+        ]
+      : []),
   ]
 
   return (
@@ -103,13 +155,75 @@ export default function Home({ onOpen, onSearch }: HomeProps) {
           </kbd>
         </button>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {/* 「我的网盘用量」：所有已登录用户（普通用户也算）都能看到自己用了多少。
+            访客 / 未登录不渲染：他们既没有会话，fetchUsage 也只会返回 null，
+            显示一条"暂无数据"只会多一行噪音。
+            为什么不做成第四张卡片：它是"信息条"而不是"入口"，
+            卡片网格是给人进模块用的，混进去会打乱三张入口的视觉节奏。 */}
+        {status === 'authenticated' && (
+          <section className="card mb-6 flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-fg">我的网盘用量</p>
+
+              {usage === undefined ? (
+                <p className="mt-1 text-xs text-fg-subtle">读取中…</p>
+              ) : usage === null ? (
+                // 读不到不报错：离线 / 服务没起来时本地文件照样能用，
+                // 这条只是"云端统计暂时看不了"，语气要中性，别吓人。
+                <p className="mt-1 text-xs text-fg-subtle">
+                  暂时读不到云端用量（离线时不影响本地文件）
+                </p>
+              ) : (
+                <>
+                  <p className="mt-1 text-xs text-fg-muted">
+                    已用 {formatBytes(usage.used)} / {formatBytes(usage.quota)}
+                    <span className="ml-2 text-fg-subtle">{usagePercent(usage)}%</span>
+                  </p>
+                  {/* 进度条：轨道用 surface-3（比卡片底色深一档），
+                      填充用主色。宽度只能是行内 style —— Tailwind 不会为
+                      0~100 的每个百分比各生成一个类名。 */}
+                  <div
+                    role="progressbar"
+                    aria-label="我的网盘用量"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={usagePercent(usage)}
+                    className="mt-2 h-2 w-full overflow-hidden rounded-full bg-surface-3"
+                  >
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${usagePercent(usage)}%` }}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => onOpen('files')}
+              className="btn btn-outline shrink-0"
+            >
+              去文件管理 →
+            </button>
+          </section>
+        )}
+
+        {/* 管理员多一个入口时用三列，普通用户两列。
+            为什么分开写而不是固定三列：固定三列在普通用户下会空出一个格子，
+            看起来像"有个模块没加载出来"。 */}
+        <div
+          className={
+            'grid grid-cols-1 gap-4 ' +
+            (isAdmin ? 'sm:grid-cols-2 lg:grid-cols-3' : 'sm:grid-cols-2')
+          }
+        >
           {cards.map((card, index) => (
             <button
               key={card.id}
               type="button"
               onClick={() => onOpen(card.id)}
-              // animate-rise + animationDelay：两张卡片依次淡入上浮。
+              // animate-rise + animationDelay：卡片依次淡入上浮。
               // style 里传 animationDelay 而不是写死在 CSS 里，是为了让顺序由数据决定。
               style={{ animationDelay: `${index * 80}ms` }}
               className="card card-hover animate-rise group flex flex-col items-start p-6 text-left"
@@ -142,14 +256,25 @@ export default function Home({ onOpen, onSearch }: HomeProps) {
         </div>
 
         <p className="mt-12 text-center text-xs text-fg-subtle">
-          {/* 页脚说明分两件事讲清楚：
-              ① 网站本身在哪 —— 部署在公网上的静态文件；
-              ② 你的数据在哪 —— 登录后工具/分组/收藏/排序会同步到自己的账号云端；
-                 只有文件管理里的文件始终留在本机（浏览器存储，不上传）。
-              加了账号体系之后这句必须改：原来写"不会上传"已经不符合事实了。 */}
-          网站托管在 bupt-bettertools.yuesu76.workers.dev · 登录后工具和收藏会同步到你的账号 · 文件只存在这台设备
+          {/* 页脚说明：① 网站部署在哪；② 数据在哪。
+              文件管理现在会把文件同步到账号云端（R2），
+              所以这里不能再写"文件只存在这台设备" —— 上面的用量条正是从云端读的。 */}
+          网站托管在 bupt-bettertools.yuesu76.workers.dev · 登录后工具、收藏和文件会同步到你的账号云端
         </p>
       </div>
     </div>
   )
+}
+
+/**
+ * 已用 / 配额 → 0~100 的整数百分比。
+ *
+ * 为什么要夹住范围：进度条宽度是用行内 style 写的，如果服务端给出
+ * used > quota（或 quota 为 0）时算出 120% / Infinity，进度条会撑出卡片。
+ * 这里统一收进 0~100，另外四舍五入到整数，避免出现 33.33333%。
+ */
+function usagePercent(usage: CloudUsage): number {
+  if (!Number.isFinite(usage.quota) || usage.quota <= 0) return 0
+  const percent = (usage.used / usage.quota) * 100
+  return Math.min(100, Math.max(0, Math.round(percent)))
 }

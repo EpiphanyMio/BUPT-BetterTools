@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react'
 import Home, { type ModuleId } from './components/Home'
 import ToolboxModule from './modules/ToolboxModule'
 import FilesModule from './modules/FilesModule'
+import UserAdminModule from './modules/UserAdminModule'
 import GlobalSearch from './components/GlobalSearch'
 import AuthScreen from './components/AuthScreen'
 import GuestBanner from './components/GuestBanner'
@@ -41,7 +42,10 @@ setSyncSource(readSyncData)
 setSnapshotApplier(writeSyncData)
 
 export default function App() {
-  const { status } = useAuth()
+  // isAdmin 只用来决定"入口和页面显不显示"。
+  // 它来自服务器给的 user（没有落盘、伪造不了），但真正的权限仍由服务端 403 兜底 ——
+  // 就算有人在控制台把这里改成 true，接口照样不会给数据。
+  const { status, isAdmin } = useAuth()
 
   // 访客（只读）预览：isGuest 决定"没登录也放行主界面"，
   // exitGuest 用来在真登录成功后把标记清掉。
@@ -201,6 +205,17 @@ export default function App() {
           jump={fileJump}
         />
       )}
+      {/* 用户组管理：只有管理员能进。
+          非管理员万一通过旧链接 / 手动改 state 走到这里（active === 'admin'），
+          直接回落到首页 —— 不渲染一个注定 403 的空白页面。
+          真正的数据权限在服务端：接口对非管理员返回 403，
+          这里的判断只是"别把用不了的界面摆出来"。 */}
+      {active === 'admin' &&
+        (isAdmin ? (
+          <UserAdminModule onBack={goHome} onSearch={() => setSearchOpen(true)} />
+        ) : (
+          <Home onOpen={setActive} onSearch={() => setSearchOpen(true)} />
+        ))}
       {active === null && <Home onOpen={setActive} onSearch={() => setSearchOpen(true)} />}
 
       {/* 搜索浮层放在最外层：任何模块下按 Ctrl+K 都能用 */}

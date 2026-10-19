@@ -179,3 +179,30 @@ CREATE TABLE IF NOT EXISTS file_shares (
 );
 
 CREATE INDEX IF NOT EXISTS file_shares_user ON file_shares(user_id, node_id);
+
+-- ---------------------------------------------------------------- 最近登录（用户组管理用）
+--
+-- 为什么单独建一张表，而不是给 users 加 last_login_at / last_login_ip 两列：
+--   SQLite 没有「ADD COLUMN IF NOT EXISTS」，给已有表加列只能写成裸 ALTER TABLE ... ADD COLUMN，
+--   而本文件的前提是**可以重复执行** —— 第二次跑就会报 duplicate column name，
+--   整个 schema 从此没法用来给新库 / 老库对齐结构。
+--   单独建表用 CREATE TABLE IF NOT EXISTS，天然是幂等的。
+--
+-- 为什么 user_id 直接当主键：
+--   管理员页面只关心「最近一次」登录，不需要登录历史；主键挂在 user_id 上，
+--   每个用户最多一行，写入就能用 INSERT ... ON CONFLICT(user_id) DO UPDATE 一句完成，
+--   不用先 SELECT 再判断该 INSERT 还是 UPDATE。
+--
+-- 为什么 last_login_ip 默认空串、而不是允许 NULL：
+--   接口契约里它是 string；空串表示「不知道来源 IP」。真用 NULL 的话，
+--   读取侧要处处判空，拼接 / 比较前还得处理，和 file_nodes.parent_id 是同一个理由。
+--   （这里只做兜底 —— Worker 会优先用 cf-connecting-ip，截断到 64 字符再写进来。）
+--
+-- ⚠️ 这张表是「可缺的」：Worker 代码可能先于本文件上线，在那之前登录 / 注册
+--   照样必须成功。worker/index.ts 里写它的地方全部 catch 掉、只打日志，
+--   所以这里晚执行一步不会把线上登录卡死。
+CREATE TABLE IF NOT EXISTS login_records (
+  user_id       INTEGER PRIMARY KEY,
+  last_login_at INTEGER NOT NULL,
+  last_login_ip TEXT    NOT NULL DEFAULT ''
+);

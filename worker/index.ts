@@ -53,6 +53,7 @@
 //   POST   /api/auth/login             → 200 { token, user }
 //   POST   /api/auth/logout   需登录    → 204
 //   GET    /api/auth/me       需登录    → 200 { user }
+//   GET    /api/admin/users   需管理员  → 200 { quota, users }（用户组管理）
 //   GET    /api/invites       需管理员  → 200 { invites }
 //   POST   /api/invites       需管理员  → 201 { code }
 //   DELETE /api/invites/{code} 需管理员 → 204
@@ -152,6 +153,42 @@ interface InviteRow {
   usedBy: string | null
 }
 
+/**
+ * 用户组管理里每行的查询结果。
+ *
+ * 列名统一用 AS 转成驼峰，省得下面每处都手写 snake→camel；
+ * 可空列按 SQLite 的真实行为标：LEFT JOIN 没匹配到就是 null。
+ */
+interface AdminUserRow {
+  id: number
+  username: string
+  isAdmin: number
+  createdAt: number
+  lastLoginAt: number | null
+  lastLoginIp: string | null
+  /** file_usage 没行时 COALESCE 成 0，所以正常不会是 null；类型放宽只是为了不用非空断言 */
+  usedBytes: number | null
+  fileCount: number
+  folderCount: number
+  shareCount: number
+}
+
+/** GET /api/admin/users 里 users[] 每项的形状（和前端约定好的契约） */
+interface AdminUser {
+  id: number
+  username: string
+  isAdmin: boolean
+  createdAt: number
+  /** 从没登录过 → null（不是 0，0 会被前端渲染成 1970 年） */
+  lastLoginAt: number | null
+  /** 没有 IP 时是空串，展示成「未知」由前端决定 */
+  lastLoginIp: string
+  usedBytes: number
+  fileCount: number
+  folderCount: number
+  shareCount: number
+}
+
 /** 一条目录节点（含墓碑）。和前端 src/lib/fileCloud.ts 的 CloudNode 一一对应。 */
 interface CloudNode {
   id: string
@@ -230,6 +267,11 @@ const INVITE_CLAIM_LEASE_MS = 2 * 60 * 1000
 const INVITE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 const INVITE_LENGTH = 12
 const INVITE_CODE_RE = /^[A-Za-z0-9-]{6,32}$/
+
+// 记进 login_records.last_login_ip 的 IP 最多留 64 个字符。
+// 为什么要截断：这两个头都是客户端可以随便写的，不设上限就能塞进一条几 MB 的
+// 「IP」，让管理员列表接口和页面一起变慢；IPv6 最长 45 字符，64 已经够用。
+const MAX_LOGIN_IP_LENGTH = 64
 
 // ---------------------------------------------------------------- 文件管理常量
 //
@@ -545,6 +587,43 @@ async function requireAdmin(request: Request, env: Env): Promise<{ user: User; t
 }
 
 /**
+ * 取客户端 IP：优先 cf-connecting-ip，其次 x-forwarded-for 的第一段。
+ *
+ * 为什么是这个顺序：cf-connecting-ip 由 Cloudflare 边缘写入，客户端伪造不了；
+ * 而 x-forwarded-for 是一串「经过的代理」列表，第一段才是最初的客户端，
+ * 而且整串都能被客户端随意伪造 —— 只在没有 CF 头的场景（本地 / 自建代理）下当兜底。
+ * 两个头都没有时返回空串：空串代表「不知道」，怎么展示交给前端，后端不替它编一个值。
+ */
+function readClientIp(request: Request): string {
+  const cf = (request.headers.get('cf-connecting-ip') ?? '').trim()
+  const forwarded = (request.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
+  const ip = cf !== '' ? cf : forwarded
+  return ip.slice(0, MAX_LOGIN_IP_LENGTH)
+}
+
+/**
+ * 记下最近一次登录的时间和 IP（每个用户只保留一行，见 schema.sql 的 login_records）。
+ *
+ * 为什么所有异常都在这里吞掉：线上部署是「先推代码、人再手动执行 schema.sql」，
+ * 中间那段时间 login_records 表可能还不存在。这时如果让它把异常抛出去，
+ * 表现就是**所有人都登录 / 注册失败** —— 比少记一条登录信息严重得多。
+ * 所以失败只写 console.error（wrangler tail 能看到），调用方照常返回成功。
+ */
+async function recordLogin(db: D1Database, userId: number, now: number, ip: string): Promise<void> {
+  try {
+    await db
+      .prepare(
+        'INSERT INTO login_records (user_id, last_login_at, last_login_ip) VALUES (?, ?, ?) ' +
+          'ON CONFLICT(user_id) DO UPDATE SET last_login_at = excluded.last_login_at, last_login_ip = excluded.last_login_ip',
+      )
+      .bind(userId, now, ip)
+      .run()
+  } catch (error) {
+    console.error('[bettertools] 写 login_records 失败（登录本身不受影响）：', error)
+  }
+}
+
+/**
  * POST /api/auth/register —— 邀请码注册。
  *
  * 顺序是「格式 → 查重名 → 占邀请码 → 建用户」，每一步都为了少浪费一次哈希或写库：
@@ -615,6 +694,10 @@ async function handleRegister(request: Request, env: Env): Promise<Response> {
     .bind(Number(created.id), now, inviteCode)
     .run()
 
+  // 注册成功同时就是一次登录（下面直接发会话令牌），所以也记一条：
+  // 否则管理员在用户组页面看到新账号是「从没登录过」，和实际行为对不上。
+  await recordLogin(db, Number(created.id), now, readClientIp(request))
+
   const token = await createSession(db, Number(created.id), now)
   return json({ token, user: { id: Number(created.id), username: created.username, isAdmin: false } }, 201)
 }
@@ -665,6 +748,10 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   // 顺手清掉所有过期会话：sessions 表只增不减的话，几年后就是一堆没人认领的行
   await db.prepare('DELETE FROM sessions WHERE expires_at <= ?').bind(now).run()
 
+  // 只有密码对了才记：把失败的尝试也记进来，等于让任何人拿别人的用户名
+  // 反复试密码，就能把管理员看到的「最近登录 IP」刷成自己的（也能当探测器的噪声）。
+  await recordLogin(db, Number(row.id), now, readClientIp(request))
+
   const token = await createSession(db, Number(row.id), now)
   return json({
     token,
@@ -685,6 +772,62 @@ async function handleMe(request: Request, env: Env): Promise<Response> {
   const identity = await requireUser(request, env)
   if (isResponse(identity)) return identity
   return json({ user: identity.user })
+}
+
+// ---------------------------------------------------------------- 用户组管理（管理员）
+
+/**
+ * GET /api/admin/users —— 管理员页面的数据源：每个账号的用量、最近登录时间 / IP。
+ *
+ * 为什么用一次 JOIN 查完，而不是「先查用户，再逐个查用量」：
+ * 用户一多，后者就是 N+1 次数据库往返；而这个接口本来就是给管理员整页看的，
+ * 一次查完再在内存里转形状，响应只多几 KB，延迟却不会随用户数线性涨。
+ *
+ * 三个计数用相关子查询而不是多表 JOIN + GROUP BY：
+ * file_nodes 和 file_shares 都是一对多，两张一对多的表直接 JOIN 会让行数相乘，
+ * COUNT 出来的数字会成倍虚高（而且很难第一眼看出错在哪）。
+ * 子查询每行多扫一次以 user_id 开头的索引，代价很小、语义却是分开算的。
+ *
+ * lastLoginAt 走 LEFT JOIN、没有行时回 null：从没登录过的账号要能被前端显示成
+ * 「从未登录」，给 0 会被渲染成 1970 年，而且和「真的在 1970 年登录过」分不开。
+ */
+async function handleListUsers(request: Request, env: Env): Promise<Response> {
+  const identity = await requireAdmin(request, env)
+  if (isResponse(identity)) return identity
+
+  const rows = await env.DB
+    .prepare(
+      'SELECT u.id AS id, u.username AS username, u.is_admin AS isAdmin, u.created_at AS createdAt, ' +
+        'l.last_login_at AS lastLoginAt, l.last_login_ip AS lastLoginIp, ' +
+        'COALESCE(us.bytes, 0) AS usedBytes, ' +
+        "(SELECT COUNT(*) FROM file_nodes n WHERE n.user_id = u.id AND n.deleted = 0 AND n.kind = 'file') AS fileCount, " +
+        "(SELECT COUNT(*) FROM file_nodes n WHERE n.user_id = u.id AND n.deleted = 0 AND n.kind = 'folder') AS folderCount, " +
+        '(SELECT COUNT(*) FROM file_shares s WHERE s.user_id = u.id AND s.revoked = 0) AS shareCount ' +
+        'FROM users u ' +
+        'LEFT JOIN login_records l ON l.user_id = u.id ' +
+        'LEFT JOIN file_usage us ON us.user_id = u.id ' +
+        // 注册时间升序：管理员看到的是「账号的加入顺序」，和 id 顺序一致时也能对上号；
+        // 同一毫秒注册的两个账号再按 id 兜底，保证分页 / 多次请求的顺序稳定。
+        'ORDER BY u.created_at ASC, u.id ASC',
+    )
+    .all<AdminUserRow>()
+
+  // 数值统一 Number() 收窄：D1 返回的列类型声明是 unknown，直接透传可能把
+  // bigint / 字符串漏进 JSON，前端做算术或比较时会得到意料之外的结果。
+  const users: AdminUser[] = rows.results.map((row) => ({
+    id: Number(row.id),
+    username: row.username,
+    isAdmin: Number(row.isAdmin) === 1,
+    createdAt: Number(row.createdAt),
+    lastLoginAt: row.lastLoginAt === null ? null : Number(row.lastLoginAt),
+    lastLoginIp: row.lastLoginIp ?? '',
+    usedBytes: Number(row.usedBytes ?? 0),
+    fileCount: Number(row.fileCount),
+    folderCount: Number(row.folderCount),
+    shareCount: Number(row.shareCount),
+  }))
+
+  return json({ quota: USER_QUOTA_BYTES, users })
 }
 
 // ---------------------------------------------------------------- 邀请码
@@ -1619,6 +1762,14 @@ async function route(request: Request, env: Env): Promise<Response> {
       return handleMe(request, env)
     }
     return json({ error: 'not-found' }, 404)
+  }
+
+  // ---- 用户组管理（管理员） ----
+  // 单独一个前缀而不是塞进 /api/auth/：它跟「我是谁」无关，是管理员看**别人**的数据，
+  // 前端的权限判断也按 /api/admin/ 前缀走，混进 auth 组会让两件事的边界变模糊。
+  if (path === '/api/admin/users') {
+    if (request.method !== 'GET') return methodNotAllowed('GET')
+    return handleListUsers(request, env)
   }
 
   // ---- 邀请码 ----
