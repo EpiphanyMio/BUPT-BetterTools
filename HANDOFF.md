@@ -3,9 +3,9 @@
 > 只写状态与结论，规则见 `AGENTS.md`。更新 2026-10-20 15:50；不确定的标 **待确认**。
 
 ## 状态
-- `HEAD = 21ae12e` 已 push 到 `origin/main`：新增「图片解混淆」模块（纯前端，不需要 D1/R2 迁移），push 即自动部署。
+- `HEAD = ad0a4a9` 已 push 到 `origin/main`：新增「图片解混淆」模块（纯前端，不需要 D1/R2 迁移），push 即自动部署。
 - 上一轮「公共文件池」线上仍在（566167e 之后没有后端改动）；`user_quotas` 表是否已跑过仍**待确认**（见待办）。
-- 本轮验证：`pnpm build` exit 0（67 模块）、Node 单测 81/81、浏览器 28/28（访客身份，4 种算法端到端逐像素对比 0 差异）。
+- 本轮验证：`pnpm build` exit 0（67 模块）、Node 单测 82/82、浏览器 28/28（访客身份，4 种算法端到端逐像素对比 0 差异）。
 - `wrangler.jsonc` 里的多余 R2 绑定 `bupt_bettertools_files` 仍**待确认**；`AGENTS.md` 有未提交改动，都没动。
 - `ExternalTools/ObfuscationUtils/` 是 Java 参考库（未提交、不影响构建）；别 `git add -A`。
 - **网页开发暂停**：只有用户说「需要合作」才恢复（本次是用户直接下的任务）。
@@ -41,6 +41,7 @@
 - `scripts/_archive-log.mjs` 是旧的一次性脚本：**整篇覆盖** `DeveloperLogs/archive/NewFunctions-2026-10.md`，不是追加；别直接跑。本次误用后已用 `git show HEAD:` 恢复。
 - 图片解混淆的 Sort/Random 把「列顺序」编进图片最后一行（高 16 位原列号 + 低 16 位 RGB565），这些像素 alpha 常常 < 255。Canvas 是预乘 alpha，透明像素 RGB 会被乘成 0，所以这两个算法**必须走 `src/lib/pngCodec.ts` 自己解码**，别改回 Canvas；导出时只要有一个像素不是全不透明也要走自写编码器。末行本身是 RGB565 有损，还原后只是近似（原库设计）。
 - 图片混淆必须无损：JPG 重压缩、截图、缩放、转格式都会改像素，任何算法都还原不了；界面上已写提示。Sort/Random 尤其不能用 JPG。
+- 非 ASCII 密钥和 Java 端可能对不上：原库 `(key+i).getBytes()` 用**系统默认编码**（中文 Windows 是 GBK），网页版固定 UTF-8；界面已提示 Block/RowPixel/PerPixel 尽量用英文 / 数字密钥。
 - 浏览器实测脚本都是下划线开头、不进 git：`scripts/_image-obf-test.mjs`（Node 单测）、`_image-obf-e2e.mjs`（浏览器端到端）、`_image-obf-visual.mjs`（截图）。
 - 公共文件池复用 `file_nodes`：`user_id = 0` 是池子，真实账号从 1 开始。池内 R2 key 是 `p/{nodeId}`，私人是 `u/{userId}/{nodeId}`。
 - 池内文件的配额归属靠 R2 `customMetadata.uploader`（不是 D1）。换人重传时会先退旧上传者、再记新上传者；删除同理。别再用 `file_nodes.size` 算配额。
@@ -58,7 +59,7 @@
 不用 UI 框架；不写死颜色、不用 `dark:`；组件不直接碰存储/fetch（存储走 hooks，fetch 只在 `lib/auth.ts`、`lib/sync.ts`、`lib/fileCloud.ts`、`lib/userAdmin.ts`）；快照整包单行+乐观锁，按 `user_id` 隔离，PBKDF2-SHA256 10 万次；同步是加分项，离线照常可用；文件内容走 R2、目录树走 D1，本机 IndexedDB 只做缓存；文件分区用 `FileNode.scope`（缺省 private），池内节点在服务端是 `file_nodes.user_id = 0`，配额归上传者；访客只读两层（`isGuest()` 硬拦截+界面禁用），**登录成功必须清访客标记**；`refresh(id, { silent: true })` 不闪骨架屏；管理员接口一律 `requireAdmin`（401 和 403 分开），前端 `isAdmin` 只决定入口显不显示；配额接口传**整数字节**、界面用 MB 输入，默认配额只存在于代码常量里（无行=默认）。
 
 ## 最近提交
-`21ae12e` 图片解混淆 | `566167e` 公共文件池 | `98ca28b` 每账号配额 | `44d0d46` 用户组管理上线 | `275dc75` 用户组管理 | `8c67d1d` 文件管理上云 | `4af160f` 卡片详情按钮 | `57fc9ad` 日志归档 | `1f7ff4f` browser-verify
+`ad0a4a9` 图片解混淆收尾 | `21ae12e` 图片解混淆 | `566167e` 公共文件池 | `98ca28b` 每账号配额 | `44d0d46` 用户组管理上线 | `275dc75` 用户组管理 | `8c67d1d` 文件管理上云 | `4af160f` 卡片详情按钮 | `57fc9ad` 日志归档
 
 ## 别读 / 别碰
 `node_modules/`、`dist/`、`.pnpm-*`、`.wrangler/`、`.dsh/`、`.dsh-tmp/`、`.backup-before-google/`、`.dev.vars`（密钥）、`DeveloperLogs/archive/`（按需）、`scripts/_*`（临时）、`pnpm-lock.yaml`（除非改依赖）。
