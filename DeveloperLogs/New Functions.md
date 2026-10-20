@@ -10,6 +10,36 @@
 
 ---
 
+## 2026-10-20 15:40 · 新增「图片解混淆」模块：把 Java 库 ObfuscationUtils 移植进浏览器
+
+首页多了第三张入口卡「图片解混淆」：上传被混淆的图片 → 选算法 → 填密钥 → 下载还原后的 PNG。全部在浏览器本地计算，图片不上传，断网也能用。
+
+### 为什么是重写，而不是直接跑原库
+
+原库 `ExternalTools/ObfuscationUtils` 是 Java（Gradle + AWT），网页里没有 JVM，Cloudflare Workers 也跑不了。所以 8 种算法（PicEncrypt 行列 / 行、Tomato、Block、RowPixel、PerPixel、Sort、Random）全部逐行移植成 `src/lib/imageObfuscation.ts`；连 Java 的实现细节都照搬：MD5 洗牌、`java.util.Random` 的 48 位 LCG、`Math.floorDiv`、有符号 int 比较、`Math.round` —— 同一个密钥、同一张图，结果和原库一致。原库的 XuanObfuscation 是空壳（process 返回 null），没有移植。
+
+### 坑：Canvas 会毁掉透明像素里的信息
+
+Sort / Random 把「列顺序」编码进图片最后一行（高 16 位原列号 + 低 16 位 RGB565），而这些像素的 alpha 常常不是 255。浏览器 Canvas 内部是预乘 alpha：`putImageData` / `drawImage` 之后透明像素的 RGB 会被乘成 0，映射直接丢失，解出来是噪点。
+所以新增 `src/lib/pngCodec.ts`：自己解 / 编 PNG（8 位、非隔行，支持 0/2/3/4/6 颜色类型和 tRNS），这两个算法不用 Canvas；导出时只要有像素不是全不透明，也走自写编码器保真。普通不透明图仍用 Canvas 导出，体积更小。
+
+### 实现要点
+
+- 引擎是纯函数 `processImage(算法, 方向, 密钥, {rgba,width,height})`，不碰 DOM，能直接在 Node 里单测。
+- Block 会把宽高补齐到 32 的倍数（原库行为），输出尺寸可能变大；Sort / Random 的最后一行是有损 RGB565，还原后这一行只是近似 —— 都是算法本身的设计。
+- 界面：拖拽 / 选择图片、算法说明、密钥类型提示、原图与结果并排、下载 PNG、错误中文提示；首页卡片列数改成按数量自适应（普通用户 3 张三列，管理员 4 张 2×2）。
+- 访客可用：纯本地计算、不写任何数据，不做只读限制。
+
+### 验证
+
+- Node 单测 81 项全过：MD5 与 `node:crypto` 对拍、`Random(42)` 已知随机序列、8 种算法加解密可逆、PNG 编解码含 `alpha=0` 逐字节一致。
+- 浏览器实测 28 项全过：首页入口、默认参数、行列 / Tomato / Sort / Random 端到端还原（逐像素对比 0 差异）、自写 PNG 解码器与 Chrome 编码器对拍、非法密钥提示、混淆方向、返回首页。
+- 渐变测试图解混淆后与原图逐字节一致；`pnpm build` exit 0（67 模块）。
+
+*涉及文件：`src/lib/imageObfuscation.ts`（新增）、`src/lib/pngCodec.ts`（新增）、`src/modules/ImageDeobfuscateModule.tsx`（新增）、`src/components/Home.tsx`、`src/App.tsx`*
+
+---
+
 ## 2026-10-19 15:52 · 文件管理新增「公共文件池」：所有用户共享，配额记在上传者头上
 
 文件管理顶部多了「我的文件 / 公共文件池」切换。池内是**一棵所有人共享的目录树**：任何登录用户都能新建文件夹、上传、改名、移动、删除，池内文件所有人可下载；上传消耗从**上传者自己的**个人配额里扣。
@@ -127,131 +157,13 @@ SQLite 没有 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，而 `schema.sql` 必�
 
 *涉及文件：`src/components/ToolCard.tsx`*
 
-## 2026-10-19 10:35 · 访客预览模式：不登录也能看，但只能看
-
-登录页多了一个「👀 访客预览，先随便看看」按钮。不登录也能进网站浏览工具和文件，
-但**一切写操作都被挡住**，页面顶部常驻一条「只能查看，不能修改」的横幅。
-
-### 为什么要有这个功能
-
-之前是"不登录什么都看不到"。想给朋友看一眼或自己换台设备瞄一眼，都得先注册个账号 ——
-门槛太高。但直接放开又等于谁都能改。所以拆成两件事：**看**不需要身份，**改**需要。
-
-### 只读是怎么保证的：两层，谁都不依赖谁
-
-**第一层（真正管用的）：数据层硬拦截。**
-所有会写数据的函数，入口第一行就是 `if (isGuest()) return` —— 23 处，覆盖
-工具增删改、分组、收藏、排序、通用设置、开发者参数、文件的新建/上传/改名/删除/移动，
-以及"云端数据写回本地"那一个入口。文件相关的写操作直接**抛错**（比静默返回诚实）。
-
-为什么不能只靠界面禁用按钮：**忘了禁用的地方是静默的** —— 用户点一下就把数据改了，
-没有任何报错，也没有任何日志。漏一个就是一个洞。
-
-**第二层（让人知道为什么点不动）：界面禁用 + 常驻横幅。**
-按钮加 `disabled` + `title="访客预览模式不能修改"`；顶部横幅一直说明"只能查看"。
-没有横幅的话，访客过一会儿就忘了自己没登录，只会以为网站坏了。
-
-### 两个实现细节
-
-**① 访客不走"等云端同步"那一步。** 原来的门禁是「没登录 → 登录页；登录了但云端没拉完 → 过渡页」。
-访客没有会话，`syncNow` 本来就是空转，让他对着「正在同步你的云端数据…」干等最长 10 秒纯属莫名其妙。
-所以判断顺序改成：先看登录态，再看到底是不是访客。
-
-**② 登录成功后必须清掉访客标记。** 标记存在 localStorage（所以刷新后还在访客态）。
-如果登录后不清，下次刷新、会话又刚好过期时，用户会被当成访客放进来、还挂着只读横幅 ——
-明明登录过却什么也改不了，而且看不出原因。
-
-### 验证
-
-浏览器实测 11 项全过：
-
-- 登录页有入口 → 点进去直接到主界面 + 顶部横幅 → localStorage 记下标记
-- 访客点收藏 → 数据没变（0 → 0）
-- 文件管理「新建文件夹」「上传文件」都是 `disabled`
-- **刷新后仍在访客态**（不会弹回登录页）
-- 点「去登录」→ 回到登录页 + 标记清除
-- `pnpm build` exit 0（59 个模块）
-
-### 顺手修的另一个 bug
-
-`FilesModule` 的 `refresh()` 原来每次都把列表切成骨架屏，而上传/改名/删除/移动之后也会调它 ——
-**上传一个文件就整页闪一下**，像是页面重载了。加了 `refresh(id, { silent: true })`，
-只有"首次进入 / 切换文件夹"才显示骨架屏。
-
-*涉及文件：`src/lib/guestMode.ts`（新增）、`src/hooks/useGuest.ts`（新增）、`src/components/GuestBanner.tsx`（新增）、`src/App.tsx`、`src/components/AuthScreen.tsx`、`src/hooks/useTools.ts`、`src/hooks/useFavorites.ts`、`src/hooks/useToolOrder.ts`、`src/hooks/useAppSettings.ts`、`src/hooks/useDevSettings.ts`、`src/lib/fileStore.ts`、`src/lib/syncData.ts`、`src/modules/ToolboxModule.tsx`、`src/modules/FilesModule.tsx`、`src/components/GeneralSettingsPanel.tsx`、`src/components/DevSettingsContent.tsx`*
-
----
-
-## 2026-10-18 23:45 · 多用户账号体系：用户名密码登录 + 邀请码注册 + 管理员面板
-
-网站从「一个人的工具箱」变成了「有账号的工具箱」：打开先登录，注册要管理员发的邀请码。
-每个账号有自己的云端数据，互相看不见。
-
-### 为什么要做账号
-
-之前是一串共享令牌 —— 谁拿到那串就能读写全部数据，而且只有一个人能用。
-要支持"不同用户"，身份必须由服务端认定：浏览器没法自己证明"我是谁"。
-
-### 三个关键设计
-
-**① 密码只存哈希，且用定长时间比较。**
-注册时：随机 16 字节盐 + PBKDF2-SHA256 迭代 10 万次 → 存 hash。
-登录时用同样的盐和次数再算一遍。为什么不用 `a === b`：普通比较会在第一个不同字符处提前返回，
-攻击者能从响应耗时里一位一位试出来。
-
-**为什么是 10 万次而不是更高**：Workers 免费版每次请求只有 10ms CPU 预算，迭代越高越可能超时（1102）。
-10 万是免费版上能跑的安全上限附近。次数存在 `users.iterations` 里 ——
-以后升付费版可以直接提高，**老账号按自己那一行记的次数校验，不用重设密码**。
-
-**② 会话令牌：服务端只存 sha256。**
-登录返回 64 位 hex 令牌，库里只存它的 sha256。整张 sessions 表被拖走也拼不出能用的令牌。有效期 30 天。
-
-**③ 邀请码"占码"靠数据库的原子性。**
-
-```sql
-UPDATE invites SET used_at = ? WHERE code = ? AND used_by IS NULL
-```
-
-只有 `changes === 1` 的请求才能继续建账号 —— 两个请求同时用同一个码只会有一个成功。
-另外注册顺序刻意是「先查重名、再占码」：反过来的话，用户填个被占用的名字会**白烧掉一张邀请码**。
-
-### 数据库迁移
-
-旧库是单用户结构（`snapshot` 永远只有 id=1 一行），新结构每个用户一行（`user_id` 主键）。
-SQLite 没有"有条件的 DDL"，所以迁移写成可重复执行的四步：
-先按旧结构保证表存在 → 建 `snapshot_v2` → `INSERT OR IGNORE ... SELECT *`（两表都是 4 列同序）→
-`DROP` 旧的 → `RENAME` 回去。**旧的 33 个工具 + GitHub 收藏全部挂到管理员名下，实测没丢。**
-
-### 管理员与邀请码界面
-
-- 管理员：`EpiphanyMio`（`users.is_admin = 1`）
-- 邀请码管理放在「通用设置 → 开发者设置」里，**只有管理员才渲染**（非管理员连 DOM 都不存在）
-- 前端故意留死：没有"把某人提升为管理员"的入口，要加只能改 SQL
-
-### 验证
-
-- 后端等价环境 **62 项断言全过**：未登录 401 / 登录 / 错误密码 / 权限 403 / 发码 / 复用码 403 /
-  数据隔离 / 409 乐观锁 / 迁移幂等 / 大小写重名 / 各种边界
-- 线上接口 **18 项实测全过**：管理员登录、**旧数据完整回来（33 工具 + GitHub 收藏）**、
-  生成邀请码、用码注册、数据隔离、401/403、登出后令牌失效
-- 线上浏览器实测：管理员能看到并生成邀请码；
-  **用邀请码注册的普通账号在开发者设置里完全看不到邀请码区块**（连标题都没有）
-- `pnpm build` exit 0（56 个模块）
-
-### 顺手修掉的两处过期文案
-
-页脚原来写"工具和文件只存在这台设备的浏览器里，不会上传"、分组编辑器里写"不会上传到服务器" ——
-加了账号体系之后这两句已经不符合事实，改成"登录后会同步到你的账号云端，文件只存在这台设备"。
-
-*涉及文件：`worker/index.ts`、`worker/auth.ts`（新增）、`worker/d1.ts`（新增）、`worker/schema.sql`、`worker/README.md`、`src/lib/auth.ts`（新增）、`src/hooks/useAuth.ts`（新增）、`src/components/AuthScreen.tsx`（新增）、`src/components/InviteAdmin.tsx`（新增）、`src/lib/sync.ts`、`src/components/SyncSettings.tsx`、`src/components/DevSettingsContent.tsx`、`src/components/Home.tsx`、`src/components/GroupEditor.tsx`、`src/App.tsx`、`src/types.ts`*
-
----
-
 ## 📚 历史归档
 
-> 更早的 17 条已移到 [`archive/NewFunctions-2026-10.md`](archive/NewFunctions-2026-10.md)。
+> 更早的 19 条已移到 [`archive/NewFunctions-2026-10.md`](archive/NewFunctions-2026-10.md)。
 > 需要查历史时再打开，不要每次读完。
 
+- 2026-10-19 10:35 · 访客预览模式：不登录也能看，但只能看
+- 2026-10-18 23:45 · 多用户账号体系：用户名密码登录 + 邀请码注册 + 管理员面板
 - 2026-10-18 23:26 · AI 对话协作层 a2a-communicator
 - 2026-10-18 22:46 多端数据同步：Cloudflare Worker + D1 后端 + 前端同步引擎
 - 2026-10-18 22:00 修复手机端标题与按钮的排版冲突

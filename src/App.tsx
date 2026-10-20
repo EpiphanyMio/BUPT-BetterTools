@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react'
 import Home, { type ModuleId } from './components/Home'
 import ToolboxModule from './modules/ToolboxModule'
 import FilesModule from './modules/FilesModule'
+import ImageDeobfuscateModule from './modules/ImageDeobfuscateModule'
 import UserAdminModule from './modules/UserAdminModule'
 import GlobalSearch from './components/GlobalSearch'
 import AuthScreen from './components/AuthScreen'
@@ -204,6 +205,11 @@ export default function App() {
           onSearch={() => setSearchOpen(true)}
           jump={fileJump}
         />
+      )}
+      {/* 图片解混淆：纯浏览器本地计算，不依赖登录态也不写任何数据，
+          所以访客、普通用户、管理员看到的是同一个界面。 */}
+      {active === 'deobfuscate' && (
+        <ImageDeobfuscateModule onBack={goHome} onSearch={() => setSearchOpen(true)} />
       )}
       {/* 用户组管理：只有管理员能进。
           非管理员万一通过旧链接 / 手动改 state 走到这里（active === 'admin'），
