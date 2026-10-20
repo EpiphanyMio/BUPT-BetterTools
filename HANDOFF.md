@@ -1,9 +1,9 @@
 # HANDOFF · 项目交接
 
-> 只写状态与结论，规则见 `AGENTS.md`。更新 2026-10-20 15:50；不确定的标 **待确认**。
+> 只写状态与结论，规则见 `AGENTS.md`。更新 2026-10-20；不确定的标 **待确认**。
 
 ## 状态
-- 「Deadline 管理器」基础框架已完成：首页入口、选择文件夹按文件名建条目、同名格式归并、截止时间/优先级/完成状态、按账号本机保存。`pnpm build` 通过，本地浏览器检查 4/4。正文解析、DeepSeek API 和跨设备同步均未接入；截止时间需人工填写。上线后需真实账号验证导入流程。
+- 「Deadline 管理器」已搭建 AI 识别链路：页面填写自备 API 地址/模型/API Key；Worker 把 DOCX/PDF 交给 PythonAnywhere MarkItDown，MD/TXT 直接读取，再调用 OpenAI Chat Completions 兼容接口；结果必须人工确认。Flask 部署包在 `services/markitdown-api/`。`pnpm build` 与 Python 语法检查通过；PythonAnywhere 尚未部署，Worker 的 `MARKITDOWN_API_URL` / `MARKITDOWN_API_SECRET` 尚未配置，真实转换和 AI 调用待验证。旧版 DOC、扫描 PDF 暂不支持。
 - 上一个已推送提交 `ad0a4a9`：新增「图片解混淆」模块（纯前端，不需要 D1/R2 迁移），push 即自动部署。
 - 上一轮「公共文件池」线上仍在（566167e 之后没有后端改动）；`user_quotas` 表是否已跑过仍**待确认**（见待办）。
 - 本轮验证：`pnpm build` exit 0（67 模块）、Node 单测 82/82、浏览器 28/28（访客身份，4 种算法端到端逐像素对比 0 差异）。

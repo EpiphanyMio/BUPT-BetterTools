@@ -10,15 +10,17 @@
 
 ---
 
-## 2026-10-20 · 新增 Deadline 管理器基础框架
+## 2026-10-20 · Deadline 管理器：文件导入、MarkItDown 转换与自备 AI API
 
-首页新增入口。用户主动选择作业文件夹后，浏览器按相对目录和文件名生成条目，同名的 Word/PDF 合并；重新导入保留已填数据。可手动添加、修改名称/截止时间/优先级、标记完成和删除，清单先按完成状态、再按优先级、最后按截止时间排序。无法从文件名可靠判断日期，故导入时日期为空并提示核对。
+首页入口和基础清单保持不变。用户主动选择作业文件夹后，浏览器按相对目录和文件名生成条目，同名的 Word/PDF 合并；重新导入保留已填数据。
 
-本阶段只读取文件名和相对路径；文档正文与 DeepSeek API 都未接入。条目按账号保存在当前浏览器的 localStorage，不参与云端快照同步；访客只读。浏览器必须由用户主动选择文件夹，不能直接访问固定的本机路径。
+新增 AI 识别链路：页面可填写 API 地址、模型名和 API Key，默认使用 DeepSeek `deepseek-flash`，也支持 OpenAI Chat Completions 兼容服务。配置按账号只存当前浏览器；识别时 DOCX/PDF 经 Cloudflare Worker 转发到 PythonAnywhere 的微软 MarkItDown 服务，MD/TXT 直接读取，再由 Worker 调用用户填写的 AI API。模型结果先进入“待确认建议”，显示原文依据、置信度、日期和优先级，必须人工确认后才覆盖条目。
 
-验证：`pnpm build` 通过；本地浏览器检查 4/4（入口、页面、访客只读、同名文件归并与重导保留日期）。
+仓库新增 `services/markitdown-api/`，包含 Flask 服务、依赖与 PythonAnywhere 部署说明。Worker 通过 `MARKITDOWN_API_URL` 和 `MARKITDOWN_API_SECRET` 两个 Secret 访问转换服务；文件上限 15MB，不支持旧版 DOC 和扫描 PDF。自定义 AI 地址只允许公开 HTTPS 域名，避免把接口变成内网代理。
 
-*涉及文件：`src/types.ts`、`src/hooks/useDeadlines.ts`（新增）、`src/modules/DeadlineModule.tsx`（新增）、`src/components/Home.tsx`、`src/App.tsx`、`DeveloperLogs/数据接口文档.md`*
+验证：`pnpm build` 通过；Python 服务语法检查通过。真实转换与 AI 调用需部署 PythonAnywhere 并配置两个 Worker Secret 后验证。
+
+*涉及文件：`src/types.ts`、`src/hooks/useDeadlines.ts`、`src/hooks/useDeadlineAiSettings.ts`（新增）、`src/lib/deadlineAi.ts`（新增）、`src/modules/DeadlineModule.tsx`、`worker/index.ts`、`services/markitdown-api/`（新增）、`DeveloperLogs/数据接口文档.md`*
 
 ---
 

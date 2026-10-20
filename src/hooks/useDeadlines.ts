@@ -29,9 +29,16 @@ function makeId(): string {
   return crypto.randomUUID()
 }
 
-// 文件名只负责创建草稿；文档正文和真实截止时间留给后续解析器。
-export function importDeadlineFiles(files: File[], existing: DeadlineAssignment[]) {
-  const grouped = new Map<string, { title: string; paths: string[] }>()
+export interface DeadlineFileGroup {
+  sourceKey: string
+  title: string
+  paths: string[]
+  files: File[]
+}
+
+// 文件名先负责创建草稿；File 对象只留在当前页面内存里，供用户主动发起 AI 识别。
+export function groupDeadlineFiles(files: File[]): DeadlineFileGroup[] {
+  const grouped = new Map<string, DeadlineFileGroup>()
   for (const file of files) {
     const relative = file.webkitRelativePath || file.name
     if (!relative || file.name.startsWith('.') || file.name.startsWith('~$')) continue
@@ -41,14 +48,22 @@ export function importDeadlineFiles(files: File[], existing: DeadlineAssignment[
     const folder = path.slice(0, -file.name.length)
     if (!stem) continue
     const key = (folder + stem).toLocaleLowerCase()
-    const group = grouped.get(key) ?? { title: stem, paths: [] }
+    const group = grouped.get(key) ?? { sourceKey: key, title: stem, paths: [], files: [] }
     group.paths.push(path)
+    group.files.push(file)
     grouped.set(key, group)
   }
 
+  return [...grouped.values()]
+}
+
+export function importDeadlineFiles(files: File[], existing: DeadlineAssignment[]) {
+  const groups = groupDeadlineFiles(files)
+
   const next = [...existing]
   let added = 0
-  for (const [sourceKey, group] of grouped) {
+  for (const group of groups) {
+    const { sourceKey } = group
     const index = next.findIndex((item) => item.sourceKey === sourceKey)
     if (index >= 0) {
       // 重选同一个文件夹时更新文件列表，保留已经手填的日期、优先级和完成状态。
@@ -61,7 +76,7 @@ export function importDeadlineFiles(files: File[], existing: DeadlineAssignment[
       added += 1
     }
   }
-  return { assignments: next, added, scanned: grouped.size }
+  return { assignments: next, added, scanned: groups.length, groups }
 }
 
 export function useDeadlines(userId: number | null) {

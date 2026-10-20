@@ -1,0 +1,11 @@
+import os
+import sys
+
+project_home = "/home/YOUR_USERNAME/markitdown-api"
+if project_home not in sys.path:
+    sys.path.insert(0, project_home)
+
+# 请换成随机长字符串，并与 Cloudflare 的 MARKITDOWN_API_SECRET 保持一致。
+os.environ["CONVERTER_API_SECRET"] = "CHANGE_ME_TO_A_RANDOM_SECRET"
+
+from app import app as application

@@ -32,6 +32,25 @@ export interface DeadlineAssignment {
   sourceFiles: string[]
 }
 
+// AI 配置只保存在当前浏览器，不进入账号快照；API Key 每次识别时临时交给 Worker 转发。
+export interface DeadlineAiSettings {
+  apiBaseUrl: string
+  model: string
+  apiKey: string
+}
+
+// 模型先给“候选建议”，用户确认后才会写进 DeadlineAssignment。
+export interface DeadlineAiSuggestion {
+  sourceKey: string
+  title: string
+  dueAt: string | null
+  dueText: string
+  priority: 1 | 2 | 3
+  confidence: number
+  evidence: string
+  estimatedHours: number | null
+}
+
 // 「全局搜索」在结果里点到文件夹时，需要让 App 切到文件管理并打开那个目录。
 // 用一个带序号（seq）的请求对象，而不是直接传 folderId ——
 // 因为同一个文件夹连点两次，只有 seq 变了，界面才知道"又收到一次新请求"。
