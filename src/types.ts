@@ -20,6 +20,18 @@ export interface ToolDraft {
   description: string
 }
 
+// Deadline 管理器只保存文件名和相对路径，不保存作业正文。
+// 截止时间未知时留空，避免把文件修改时间误写成截止时间。
+export interface DeadlineAssignment {
+  id: string
+  title: string
+  dueAt: string
+  priority: 1 | 2 | 3
+  done: boolean
+  sourceKey: string
+  sourceFiles: string[]
+}
+
 // 「全局搜索」在结果里点到文件夹时，需要让 App 切到文件管理并打开那个目录。
 // 用一个带序号（seq）的请求对象，而不是直接传 folderId ——
 // 因为同一个文件夹连点两次，只有 seq 变了，界面才知道"又收到一次新请求"。

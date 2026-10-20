@@ -15,6 +15,7 @@ import Home, { type ModuleId } from './components/Home'
 import ToolboxModule from './modules/ToolboxModule'
 import FilesModule from './modules/FilesModule'
 import ImageDeobfuscateModule from './modules/ImageDeobfuscateModule'
+import DeadlineModule from './modules/DeadlineModule'
 import UserAdminModule from './modules/UserAdminModule'
 import GlobalSearch from './components/GlobalSearch'
 import AuthScreen from './components/AuthScreen'
@@ -46,7 +47,7 @@ export default function App() {
   // isAdmin 只用来决定"入口和页面显不显示"。
   // 它来自服务器给的 user（没有落盘、伪造不了），但真正的权限仍由服务端 403 兜底 ——
   // 就算有人在控制台把这里改成 true，接口照样不会给数据。
-  const { status, isAdmin } = useAuth()
+  const { status, isAdmin, user } = useAuth()
 
   // 访客（只读）预览：isGuest 决定"没登录也放行主界面"，
   // exitGuest 用来在真登录成功后把标记清掉。
@@ -210,6 +211,9 @@ export default function App() {
           所以访客、普通用户、管理员看到的是同一个界面。 */}
       {active === 'deobfuscate' && (
         <ImageDeobfuscateModule onBack={goHome} onSearch={() => setSearchOpen(true)} />
+      )}
+      {active === 'deadlines' && (
+        <DeadlineModule key={user?.id ?? 'guest'} onBack={goHome} onSearch={() => setSearchOpen(true)} />
       )}
       {/* 用户组管理：只有管理员能进。
           非管理员万一通过旧链接 / 手动改 state 走到这里（active === 'admin'），

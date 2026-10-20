@@ -13,7 +13,7 @@ import { fetchUsage, type CloudUsage } from '../lib/fileCloud'
 import { useAuth } from '../hooks/useAuth'
 
 // 所有模块的名字集中在这里，App.tsx 也用它
-export type ModuleId = 'tools' | 'files' | 'deobfuscate' | 'admin'
+export type ModuleId = 'tools' | 'files' | 'deobfuscate' | 'deadlines' | 'admin'
 
 interface HomeProps {
   onOpen: (module: ModuleId) => void
@@ -101,6 +101,14 @@ export default function Home({ onOpen, onSearch }: HomeProps) {
       desc: '还原被混淆的图片：选算法、填密钥，在本地算',
       meta: '8 种算法 · 图片不上传',
       accent: GOOGLE_COLORS[2],
+    },
+    {
+      id: 'deadlines' as ModuleId,
+      icon: '📅',
+      title: 'Deadline 管理器',
+      desc: '导入作业文件夹，整理截止时间和优先级',
+      meta: '作业清单 · 本地保存',
+      accent: 'var(--token-primary)',
     },
     // 管理员专属入口。
     // 为什么是"不 push 这张卡片"而不是"渲染出来再禁用/隐藏"：
@@ -217,16 +225,9 @@ export default function Home({ onOpen, onSearch }: HomeProps) {
           </section>
         )}
 
-        {/* 入口卡片的列数跟着卡片数量走：
-              普通用户 3 张（工具 / 文件 / 图片解混淆）→ 桌面三列正好一行；
-              管理员多一张「用户组管理」共 4 张 → 桌面两列正好 2×2。
-            为什么不用固定列数：固定三列时管理员那一行会空出半格，
-            看起来像"有个模块没加载出来"。 */}
+        {/* 四张常用入口用两列；管理员第五张入口单独占下一行。 */}
         <div
-          className={
-            'grid grid-cols-1 gap-4 ' +
-            (isAdmin ? 'sm:grid-cols-2' : 'sm:grid-cols-2 lg:grid-cols-3')
-          }
+          className="grid grid-cols-1 gap-4 sm:grid-cols-2"
         >
           {cards.map((card, index) => (
             <button

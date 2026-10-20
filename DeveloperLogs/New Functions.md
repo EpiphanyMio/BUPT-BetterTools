@@ -10,6 +10,18 @@
 
 ---
 
+## 2026-10-20 · 新增 Deadline 管理器基础框架
+
+首页新增入口。用户主动选择作业文件夹后，浏览器按相对目录和文件名生成条目，同名的 Word/PDF 合并；重新导入保留已填数据。可手动添加、修改名称/截止时间/优先级、标记完成和删除，清单先按完成状态、再按优先级、最后按截止时间排序。无法从文件名可靠判断日期，故导入时日期为空并提示核对。
+
+本阶段只读取文件名和相对路径；文档正文与 DeepSeek API 都未接入。条目按账号保存在当前浏览器的 localStorage，不参与云端快照同步；访客只读。浏览器必须由用户主动选择文件夹，不能直接访问固定的本机路径。
+
+验证：`pnpm build` 通过；本地浏览器检查 4/4（入口、页面、访客只读、同名文件归并与重导保留日期）。
+
+*涉及文件：`src/types.ts`、`src/hooks/useDeadlines.ts`（新增）、`src/modules/DeadlineModule.tsx`（新增）、`src/components/Home.tsx`、`src/App.tsx`、`DeveloperLogs/数据接口文档.md`*
+
+---
+
 ## 2026-10-20 15:40 · 新增「图片解混淆」模块：把 Java 库 ObfuscationUtils 移植进浏览器
 
 首页多了第三张入口卡「图片解混淆」：上传被混淆的图片 → 选算法 → 填密钥 → 下载还原后的 PNG。全部在浏览器本地计算，图片不上传，断网也能用。
@@ -144,25 +156,12 @@ SQLite 没有 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，而 `schema.sql` 必�
 
 *涉及文件：`worker/index.ts`、`worker/schema.sql`、`worker/r2.ts`、`worker/d1.ts`、`wrangler.jsonc`、`src/lib/fileCloud.ts`、`src/lib/fileSync.ts`、`src/lib/fileStore.ts`、`src/hooks/useFileSync.ts`、`src/modules/FilesModule.tsx`、`src/App.tsx`*
 
-## 2026-10-19 14:37 · 修复卡片「详情/收藏」按钮压住备注文字
-
-卡片右上角的 ⓘ 和 ☆ 是绝对定位浮在卡片上的（`top-11 right-2`），而备注紧跟在图标行下面开始排，第一行文字正好从按钮底下穿过去，被挡住一半。
-
-### 怎么改的
-
-给备注 `<p>` 加 `pr-16`（右侧预留 64px），文字到按钮左边缘前就折行/截断，不再钻到按钮下面。备注仍是 `line-clamp-2` + `min-h-10`，两行截断和卡片等高这两条都不受影响。
-
-### 为什么不动按钮位置
-
-按钮原来特意放在图标行**下方**（`top-11`），就是为了让标题独占整行宽度、长标题不提前换行。把按钮挪回标题行能解决重叠，但会把长标题挤成两行 —— 捡了芝麻丢西瓜。只给备注留空是影响面最小的改法。
-
-*涉及文件：`src/components/ToolCard.tsx`*
-
 ## 📚 历史归档
 
-> 更早的 19 条已移到 [`archive/NewFunctions-2026-10.md`](archive/NewFunctions-2026-10.md)。
+> 更早的 20 条已移到 [`archive/NewFunctions-2026-10.md`](archive/NewFunctions-2026-10.md)。
 > 需要查历史时再打开，不要每次读完。
 
+- 2026-10-19 14:37 · 修复卡片「详情/收藏」按钮压住备注文字
 - 2026-10-19 10:35 · 访客预览模式：不登录也能看，但只能看
 - 2026-10-18 23:45 · 多用户账号体系：用户名密码登录 + 邀请码注册 + 管理员面板
 - 2026-10-18 23:26 · AI 对话协作层 a2a-communicator
