@@ -86,7 +86,7 @@ export const ALGORITHMS: readonly AlgorithmInfo[] = [
     summary: '把图切成 32×32 的小方块再打乱位置，密钥可以是任意文字。',
     keyKind: 'text',
     defaultKey: 'bettertools',
-    keyHint: '任意文字都行，要和混淆时一模一样（区分大小写）。',
+    keyHint: '任意文字都行，要和混淆时一模一样（区分大小写）；建议只用英文/数字 —— 原库按系统编码处理中文，换台电脑可能对不上。',
   },
   {
     id: 'row-pixel',
@@ -94,7 +94,7 @@ export const ALGORITHMS: readonly AlgorithmInfo[] = [
     summary: '每一行内部按密钥打乱像素顺序，行的上下位置不变。',
     keyKind: 'text',
     defaultKey: 'bettertools',
-    keyHint: '任意文字都行，要和混淆时一模一样（区分大小写）。',
+    keyHint: '任意文字都行，要和混淆时一模一样（区分大小写）；建议只用英文/数字。',
   },
   {
     id: 'per-pixel',
@@ -102,7 +102,7 @@ export const ALGORITHMS: readonly AlgorithmInfo[] = [
     summary: '横竖两个方向都按密钥打乱，是这几种里「碎得最均匀」的。',
     keyKind: 'text',
     defaultKey: 'bettertools',
-    keyHint: '任意文字都行，要和混淆时一模一样（区分大小写）。',
+    keyHint: '任意文字都行，要和混淆时一模一样（区分大小写）；建议只用英文/数字。',
   },
   {
     id: 'sort',
@@ -812,6 +812,14 @@ function columnScramble(
   const mapping = new Int32Array(width)
   for (let x = 0; x < width; x++) {
     mapping[x] = (pixels[lastRowStart + x] >> 16) & 0xffff
+    // 合法映射一定是 0..width-1。越界说明这张图不是用该算法混淆的（或者被重新压缩/裁剪过），
+    // 直接报错比默默画出一张噪点图更有用 —— Java 原库在这里会抛数组越界。
+    if (mapping[x] >= width) {
+      throw new Error(
+        '最后一行里没有有效的列映射：这张图可能不是用「排序混淆 / 随机打乱」加密的，' +
+          '或者经过 JPEG 重压缩、裁剪后信息已经损坏',
+      )
+    }
   }
 
   const temp = pixels.slice()
